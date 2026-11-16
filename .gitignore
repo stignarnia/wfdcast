@@ -9,6 +9,9 @@ compile_commands.json
 .idea/
 *.user
 
+# written by install.sh into the installed source copy only
+VERSION
+
 # Python bytecode (helper)
 __pycache__/
 *.pyc

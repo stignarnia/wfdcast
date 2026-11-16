@@ -48,6 +48,7 @@ int main(int argc, char *argv[])
     KLocalization::setupLocalizedContext(&engine);
     engine.rootContext()->setContextProperty(u"cast"_s, &controller);
     engine.rootContext()->setContextProperty(u"settings"_s, &settings);
+    engine.rootContext()->setContextProperty(u"appVersion"_s, u"%1 · %2"_s.arg(QStringLiteral(WFDCAST_VERSION), QStringLiteral(WFDCAST_COMMIT)));
     engine.loadFromModule("io.github.stignarnia.wfdcast", "Main");
     if (engine.rootObjects().isEmpty()) {
         return 1;

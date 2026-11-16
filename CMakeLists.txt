@@ -18,6 +18,19 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(GST REQUIRED IMPORTED_TARGET gstreamer-1.0)
 find_package(Qt6Keychain REQUIRED) # TV passphrase in KWallet (Secret Service elsewhere)
 
+# Commit shown in the app: `git describe --always --dirty` from the checkout, or
+# the VERSION file install.sh writes into the source copy used by rebuilds.
+if(EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    execute_process(COMMAND git -C "${CMAKE_SOURCE_DIR}" describe --always --dirty --abbrev=7
+                    OUTPUT_VARIABLE WFDCAST_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/.git/index" "${CMAKE_SOURCE_DIR}/.git/HEAD")
+elseif(EXISTS "${CMAKE_SOURCE_DIR}/VERSION")
+    file(STRINGS "${CMAKE_SOURCE_DIR}/VERSION" WFDCAST_COMMIT LIMIT_COUNT 1)
+endif()
+if(NOT WFDCAST_COMMIT)
+    set(WFDCAST_COMMIT "unknown")
+endif()
+
 qt_policy(SET QTP0001 NEW)
 qt_policy(SET QTP0004 NEW)
 
@@ -43,6 +56,7 @@ qt_add_qml_module(wfdcast
 target_compile_definitions(wfdcast PRIVATE
     QT_NO_KEYWORDS
     WFDCAST_VERSION="${PROJECT_VERSION}"
+    WFDCAST_COMMIT="${WFDCAST_COMMIT}"
     WFDCAST_HELPER_PATH="${WFDCAST_HELPER_PATH}"
 )
 target_link_libraries(wfdcast PRIVATE

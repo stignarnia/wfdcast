@@ -329,6 +329,14 @@ Kirigami.ApplicationWindow {
                 text: cast.log
                 onTextChanged: cursorPosition = length
             }
+
+            Controls.Label {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.topMargin: Kirigami.Units.largeSpacing
+                text: i18n("WFD Cast %1", appVersion)
+                font: Kirigami.Theme.smallFont
+                opacity: 0.6
+            }
         }
     }
 }

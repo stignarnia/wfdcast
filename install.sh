@@ -49,6 +49,9 @@ fi
 rm -rf -- "$SRC_DIR"
 install -d -m 0755 "$SRC_DIR"
 cp -r CMakeLists.txt src helper data "$SRC_DIR/"
+# Rebuilds compile this copy without .git: record the commit the app shows.
+sudo -u "${SUDO_USER:-root}" git -C . describe --always --dirty --abbrev=7 > "$SRC_DIR/VERSION" 2>/dev/null \
+    || echo unknown > "$SRC_DIR/VERSION"
 install -D -m 0755 packaging/rebuild "$LIB_DIR/rebuild"
 if command -v pacman >/dev/null; then
     install -D -m 0644 packaging/90-wfdcast.hook "$HOOK"
