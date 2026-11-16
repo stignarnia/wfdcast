@@ -67,7 +67,8 @@ private:
     QTimer m_busTimer;
     bool m_sourceCapsLogged = false;
     GstElement *m_fitCaps = nullptr;
-    GstElement *m_box = nullptr;
+    GstElement *m_box = nullptr; // the compositor placing the picture on the black frame
+    QString m_fitCapsTemplate; // %1 width, %2 height
     Fit m_fit;
     int m_outW = 0, m_outH = 0;
 };

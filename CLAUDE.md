@@ -86,9 +86,15 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   x264 treats it as an average ceiling, ~10–14 Mbit/s at 17 on desktop content).
 - **Audio leftovers**: a killed app left the null sink loaded. The app quits through the event loop on SIGTERM/SIGINT/SIGHUP
   (KSignalHandler) and removes stale `wfdcast` sinks at startup and before each cast.
+- **The TV fell minutes behind** (12 min after ~30 min) when scaling/letterboxing ran on the CPU: 2880×1800 → 1080p
+  managed ~42 fps while frames were stamped for 60, so the stream ran at ~60% of real time. Now each encoder path
+  scales and letterboxes on its own device (vapostproc+vacompositor ~600 fps, cudaconvertscale+cudacompositor ~400 fps,
+  multithreaded videoconvert/videoscale + compositor for x264) and the **compositor outputs exactly <fps> frames per
+  second of real time** (reuses the last picture, drops extras); a leaky 1-buffer queue in front drops frames if scaling
+  is slow. videorate is gone. Tested: 20 fps live input → steady 60 fps at 100% real-time speed on all three paths.
 - **Letterboxing is live**: the scaler (`fitscale`) asks for the source's own shape so KWin renders straight at that size
-  (no stretch-then-squeeze), `videobox` adds the bars. A pad probe on the scaler's input re-fits caps (`fitcaps`) and
-  borders (`box`) when the delivered shape changes (resized shared window), without restarting the stream. KWin delivers the
+  (no stretch-then-squeeze), the compositor (`comp`) places it on a black frame. A pad probe on the scaler's input re-fits caps (`fitcaps`) and
+  the picture position (compositor pad `sink_0` xpos/ypos) when the delivered shape changes (resized shared window), without restarting the stream. KWin delivers the
   screen at its native size (2880×1800 on a 2× panel), and reports `pixel-aspect-ratio=1/2147483647` (unset
   placeholder): implausible PARs are treated as 1/1, otherwise the fit collapses to a 2 px line (happened once).
   Unverified: whether KWin delivers a resized window at its new size or keeps rendering into the negotiated one.

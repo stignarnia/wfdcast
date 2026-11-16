@@ -82,40 +82,51 @@ bool Pipeline::start(const Config &c, QString *error)
     // frame interval so the TV gets a steady stream; with gaps its player stalls
     // and catches up instead of running at a constant small delay.
     const int frameMs = qMax(1, 1000 / qMax(1, c.fps));
-    // Letterbox in the picture (the TV stretches every mode to its panel): the
-    // scaler asks for the source's own shape, so KWin renders straight at that
-    // size (KWin renders the capture at whatever size downstream negotiates),
-    // and videobox adds the bars. When the delivered shape changes (a shared
-    // window is resized) onScalerEvent() recomputes this live.
+    // Letterbox in the picture (the TV stretches every mode to its panel), on the
+    // encoder's own device: the scaler fits the source's shape (fitcaps), a
+    // compositor places it on a black frame of the TV mode. The compositor also
+    // produces exactly <fps> frames per second of real time, reusing the last
+    // picture when KDE sends none (it only sends on screen changes) and dropping
+    // extras, so the stream can never fall behind real time. The leaky queue in
+    // front drops frames instead of piling them up if scaling is ever slow.
+    // When the delivered shape changes (resized window) onScalerEvent() re-fits live.
     m_outW = c.width;
     m_outH = c.height;
     m_fit = fitInside(c.sourceWidth > 0 ? c.sourceWidth : c.width, c.sourceHeight > 0 ? c.sourceHeight : c.height, c.width, c.height);
-    QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%4 ! "
-                    "queue max-size-buffers=2 leaky=downstream ! videorate ! video/x-raw,framerate=%3/1 ! "
-                    "videoconvert ! videoscale name=fitscale ! "
-                    "capsfilter name=fitcaps caps=\"video/x-raw,format=I420,width=%5,height=%6,pixel-aspect-ratio=1/1\" ! "
-                    "videobox name=box left=-%7 right=-%8 top=-%9 bottom=-%10 fill=black ! video/x-raw,%11 ! "_s
-                        .arg(::dup(c.pipewireFd))
+    QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%3 ! "
+                    "queue max-size-buffers=1 leaky=downstream ! "_s.arg(::dup(c.pipewireFd))
                         .arg(c.node)
-                        .arg(c.fps)
-                        .arg(frameMs)
-                        .arg(m_fit.w)
-                        .arg(m_fit.h)
-                        .arg(m_fit.left)
-                        .arg(m_fit.right)
-                        .arg(m_fit.top)
-                        .arg(m_fit.bottom)
-                        .arg(size);
+                        .arg(frameMs);
+    QString scale, comp, mem;
     if (m_encoderName == u"vaapi"_s) {
-        video += u"vapostproc ! video/x-raw(memory:VAMemory),format=NV12 ! "
-                 "vah264enc name=enc bitrate=%1 rate-control=cbr key-int-max=%2 b-frames=0 target-usage=%3 ! %4 ! "_s
+        mem = u"(memory:VAMemory)"_s;
+        scale = u"vapostproc name=fitscale"_s;
+        comp = u"vacompositor"_s;
+    } else if (m_encoderName == u"nvenc"_s) {
+        mem = u"(memory:CUDAMemory)"_s;
+        scale = u"cudaupload ! cudaconvertscale name=fitscale"_s;
+        comp = u"cudacompositor"_s;
+    } else {
+        scale = u"videoconvert n-threads=0 ! videoscale name=fitscale n-threads=0"_s;
+        comp = u"compositor background=black"_s;
+    }
+    const QString format = m_encoderName == u"x264"_s ? u"I420"_s : u"NV12"_s;
+    m_fitCapsTemplate = u"video/x-raw%1,format=%2,width=%3,height=%4,pixel-aspect-ratio=1/1"_s.arg(mem, format);
+    video += u"%1 ! capsfilter name=fitcaps caps=\"%2\" ! "
+             "%3 name=comp sink_0::xpos=%4 sink_0::ypos=%5 ! video/x-raw%6,format=%7,%8,framerate=%9/1,pixel-aspect-ratio=1/1 ! "_s
+                 .arg(scale, m_fitCapsTemplate.arg(m_fit.w).arg(m_fit.h), comp)
+                 .arg(m_fit.left)
+                 .arg(m_fit.top)
+                 .arg(mem, format, size)
+                 .arg(c.fps);
+    if (m_encoderName == u"vaapi"_s) {
+        video += u"vah264enc name=enc bitrate=%1 rate-control=cbr key-int-max=%2 b-frames=0 target-usage=%3 ! %4 ! "_s
                      .arg(c.videoKbps)
                      .arg(gop)
                      .arg(8 - q)
                      .arg(h264);
     } else if (m_encoderName == u"nvenc"_s) {
-        video += u"cudaupload ! cudaconvertscale ! video/x-raw(memory:CUDAMemory),format=NV12 ! "
-                 "nvh264enc name=enc bitrate=%1 rc-mode=cbr gop-size=%2 bframes=0 zerolatency=true preset=p%3 "
+        video += u"nvh264enc name=enc bitrate=%1 rc-mode=cbr gop-size=%2 bframes=0 zerolatency=true preset=p%3 "
                  "tune=ultra-low-latency ! %4 ! "_s
                      .arg(c.videoKbps)
                      .arg(gop)
@@ -171,7 +182,7 @@ bool Pipeline::start(const Config &c, QString *error)
     gst_object_unref(clock);
     m_encoder = gst_bin_get_by_name(GST_BIN(m_pipeline), "enc");
     m_fitCaps = gst_bin_get_by_name(GST_BIN(m_pipeline), "fitcaps");
-    m_box = gst_bin_get_by_name(GST_BIN(m_pipeline), "box");
+    m_box = gst_bin_get_by_name(GST_BIN(m_pipeline), "comp");
     if (GstElement *scaler = gst_bin_get_by_name(GST_BIN(m_pipeline), "fitscale")) {
         GstPad *sink = gst_element_get_static_pad(scaler, "sink");
         gst_pad_add_probe(sink, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, GstPadProbeCallback(&Pipeline::onScalerEvent), this, nullptr);
@@ -303,9 +314,11 @@ void Pipeline::applyFit(const Fit &f)
     if (!m_fitCaps || !m_box) {
         return;
     }
-    GstCaps *caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "I420", "width", G_TYPE_INT, f.w, "height",
-                                        G_TYPE_INT, f.h, "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1, nullptr);
-    g_object_set(m_box, "left", -f.left, "right", -f.right, "top", -f.top, "bottom", -f.bottom, nullptr);
+    GstCaps *caps = gst_caps_from_string(m_fitCapsTemplate.arg(f.w).arg(f.h).toUtf8().constData());
+    if (GstPad *pad = gst_element_get_static_pad(m_box, "sink_0")) {
+        g_object_set(pad, "xpos", f.left, "ypos", f.top, nullptr);
+        gst_object_unref(pad);
+    }
     g_object_set(m_fitCaps, "caps", caps, nullptr);
     gst_caps_unref(caps);
     m_fit = f;
