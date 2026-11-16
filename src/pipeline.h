@@ -3,6 +3,7 @@
 #pragma once
 
 #include <QObject>
+#include <QSize>
 #include <QStringList>
 #include <QTimer>
 
@@ -38,6 +39,7 @@ public:
     bool running() const;
     void setVideoBitrate(int kbps);
     QString encoderInUse() const;
+    QSize pictureSize() const { return {m_fit.w, m_fit.h}; } // the source's part of the TV mode
 
     // Encoders this machine can use, for the UI: {"x264", "vaapi", "nvenc"} subset.
     static QStringList availableEncoders();

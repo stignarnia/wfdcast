@@ -383,8 +383,12 @@ void CastController::onPlay(const QString &ip, int port, int w, int h, int fps)
         return;
     }
     setState(u"streaming"_s);
-    setStatus(i18n("Casting to %1 at %2×%3, %4 fps (%5 encoder).",
-                   m_targetName.isEmpty() ? m_targetMac : m_targetName, w, h, fps, m_pipeline.encoderInUse()));
+    // Numbers as strings: i18n() would add thousands separators ("1,920").
+    const QSize pic = m_pipeline.pictureSize();
+    setStatus(i18n("Casting to %1: picture %2×%3 in %4×%5 at %6 fps (%7 encoder).",
+                   m_targetName.isEmpty() ? m_targetMac : m_targetName, QString::number(pic.width()),
+                   QString::number(pic.height()), QString::number(w), QString::number(h), QString::number(fps),
+                   m_pipeline.encoderInUse()));
 }
 
 void CastController::onSessionEnded(const QString &reason)
