@@ -124,8 +124,7 @@ bool Pipeline::start(const Config &c, QString *error)
         // No do-timestamp: audio sources stamp buffers from the sample count, which
         // is smooth; arrival-time stamps jitter and the TV plays audio in chunks.
         : u"pulsesrc device=\"%1\" provide-clock=false"_s.arg(c.audioDevice);
-    // audiorate: continuous audio (no gaps/overlaps) into the muxer
-    const QString audio = audioSrc + u" ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! audiorate ! "_s + aac
+    const QString audio = audioSrc + u" ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! "_s + aac
         + u" ! aacparse ! queue ! mux. "_s;
 
     const QString out = u"mpegtsmux name=mux alignment=7 ! rtpmp2tpay ! "
