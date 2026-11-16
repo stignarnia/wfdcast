@@ -93,7 +93,11 @@ bool Pipeline::start(const Config &c, QString *error)
     m_outW = c.width;
     m_outH = c.height;
     m_fit = fitInside(c.sourceWidth > 0 ? c.sourceWidth : c.width, c.sourceHeight > 0 ? c.sourceHeight : c.height, c.width, c.height);
-    QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%3 ! "
+    // video/x-raw = system memory: KWin then hands over plain (memfd) buffers. Left
+    // open, it offers its tiled DMA-BUFs (e.g. AMD modifier 0x0200000010401b04),
+    // which vapostproc accepted in negotiation and then failed on
+    // ("Internal data stream error"). Every working run used system memory.
+    QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%3 ! video/x-raw ! "
                     "queue max-size-buffers=1 leaky=downstream ! "_s.arg(::dup(c.pipewireFd))
                         .arg(c.node)
                         .arg(frameMs);

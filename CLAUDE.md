@@ -86,6 +86,9 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   x264 treats it as an average ceiling, ~10–14 Mbit/s at 17 on desktop content).
 - **Audio leftovers**: a killed app left the null sink loaded. The app quits through the event loop on SIGTERM/SIGINT/SIGHUP
   (KSignalHandler) and removes stale `wfdcast` sinks at startup and before each cast.
+- **KWin offers tiled DMA-BUFs** (`DMA_DRM`, AMD modifier `0x0200000010401b04`) when the caps after `pipewiresrc` allow
+  them; vapostproc accepted them and the stream died with "Internal data stream error". A `video/x-raw` (system
+  memory) filter right after `pipewiresrc` keeps KWin on plain buffers, as every working run had.
 - **The TV fell minutes behind** (12 min after ~30 min) when scaling/letterboxing ran on the CPU: 2880×1800 → 1080p
   managed ~42 fps while frames were stamped for 60, so the stream ran at ~60% of real time. Now each encoder path
   scales and letterboxes on its own device (vapostproc+vacompositor ~600 fps, cudaconvertscale+cudacompositor ~400 fps,
