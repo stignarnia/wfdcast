@@ -7,6 +7,8 @@
 #include <QTimer>
 
 typedef struct _GstElement GstElement;
+typedef struct _GstPad GstPad;
+typedef struct _GstPadProbeInfo GstPadProbeInfo;
 
 // The stream: PipeWire screen + PulseAudio sound -> H.264 (Constrained Baseline)
 // + AAC -> MPEG-TS -> RTP/UDP to the TV, the format Wi-Fi Display sinks expect.
@@ -46,6 +48,15 @@ Q_SIGNALS:
 
 private:
     void pollBus();
+
+    // Where the source sits inside the TV mode: its shape kept, black bars around.
+    struct Fit {
+        int w = 0, h = 0, left = 0, right = 0, top = 0, bottom = 0;
+        bool operator==(const Fit &) const = default;
+    };
+    static Fit fitInside(int srcW, int srcH, int outW, int outH);
+    void applyFit(const Fit &fit); // live: scaler caps + borders
+    static int onScalerEvent(GstPad *pad, GstPadProbeInfo *info, void *self);
     static QString resolveEncoder(const QString &wanted);
 
     GstElement *m_pipeline = nullptr;
@@ -53,4 +64,8 @@ private:
     QString m_encoderName;
     QTimer m_busTimer;
     bool m_sourceCapsLogged = false;
+    GstElement *m_fitCaps = nullptr;
+    GstElement *m_box = nullptr;
+    Fit m_fit;
+    int m_outW = 0, m_outH = 0;
 };

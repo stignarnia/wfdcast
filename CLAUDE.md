@@ -86,6 +86,10 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   x264 treats it as an average ceiling, ~10–14 Mbit/s at 17 on desktop content).
 - **Audio leftovers**: a killed app left the null sink loaded. The app quits through the event loop on SIGTERM/SIGINT/SIGHUP
   (KSignalHandler) and removes stale `wfdcast` sinks at startup and before each cast.
+- **Letterboxing is live**: the scaler (`fitscale`) asks for the source's own shape so KWin renders straight at that size
+  (no stretch-then-squeeze), `videobox` adds the bars. A pad probe on the scaler's input re-fits caps (`fitcaps`) and
+  borders (`box`) when the delivered shape changes (resized shared window), without restarting the stream. Unverified:
+  whether KWin delivers a resized window at its new size or keeps rendering into the negotiated one.
 - **KWin renders the screencast at whatever size downstream negotiates**: without a caps filter pinning the source
   size right after `pipewiresrc`, KWin delivered 1600×900 already stretched and `add-borders` had nothing to do
   (verified on a frame captured from the wire). The pipeline pins the size the portal reported.

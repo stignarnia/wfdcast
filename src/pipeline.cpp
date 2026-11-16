@@ -82,36 +82,29 @@ bool Pipeline::start(const Config &c, QString *error)
     // frame interval so the TV gets a steady stream; with gaps its player stalls
     // and catches up instead of running at a constant small delay.
     const int frameMs = qMax(1, 1000 / qMax(1, c.fps));
-    // Letterbox explicitly: scale whatever KWin delivers (it renders the stream
-    // at the size downstream asks for, possibly already stretched) to the size
-    // that keeps the source's true shape (the portal's size) inside the TV mode,
-    // then add the black borders with videobox. The TV stretches every mode to
-    // its panel, so the bars must be in the picture.
-    const int sw = c.sourceWidth > 0 ? c.sourceWidth : c.width;
-    const int sh = c.sourceHeight > 0 ? c.sourceHeight : c.height;
-    int fw = c.width, fh = int(qRound(double(c.width) * sh / sw));
-    if (fh > c.height) {
-        fh = c.height;
-        fw = int(qRound(double(c.height) * sw / sh));
-    }
-    fw &= ~1;
-    fh &= ~1;
-    const int left = ((c.width - fw) / 2) & ~1, top = ((c.height - fh) / 2) & ~1;
-    const int right = c.width - fw - left, bottom = c.height - fh - top;
+    // Letterbox in the picture (the TV stretches every mode to its panel): the
+    // scaler asks for the source's own shape, so KWin renders straight at that
+    // size (KWin renders the capture at whatever size downstream negotiates),
+    // and videobox adds the bars. When the delivered shape changes (a shared
+    // window is resized) onScalerEvent() recomputes this live.
+    m_outW = c.width;
+    m_outH = c.height;
+    m_fit = fitInside(c.sourceWidth > 0 ? c.sourceWidth : c.width, c.sourceHeight > 0 ? c.sourceHeight : c.height, c.width, c.height);
     QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%4 ! "
                     "queue max-size-buffers=2 leaky=downstream ! videorate ! video/x-raw,framerate=%3/1 ! "
-                    "videoconvert ! videoscale ! video/x-raw,format=I420,width=%5,height=%6,pixel-aspect-ratio=1/1 ! "
-                    "videobox left=-%7 right=-%8 top=-%9 bottom=-%10 fill=black ! video/x-raw,%11 ! "_s
+                    "videoconvert ! videoscale name=fitscale ! "
+                    "capsfilter name=fitcaps caps=\"video/x-raw,format=I420,width=%5,height=%6,pixel-aspect-ratio=1/1\" ! "
+                    "videobox name=box left=-%7 right=-%8 top=-%9 bottom=-%10 fill=black ! video/x-raw,%11 ! "_s
                         .arg(::dup(c.pipewireFd))
                         .arg(c.node)
                         .arg(c.fps)
                         .arg(frameMs)
-                        .arg(fw)
-                        .arg(fh)
-                        .arg(left)
-                        .arg(right)
-                        .arg(top)
-                        .arg(bottom)
+                        .arg(m_fit.w)
+                        .arg(m_fit.h)
+                        .arg(m_fit.left)
+                        .arg(m_fit.right)
+                        .arg(m_fit.top)
+                        .arg(m_fit.bottom)
                         .arg(size);
     if (m_encoderName == u"vaapi"_s) {
         video += u"vapostproc ! video/x-raw(memory:VAMemory),format=NV12 ! "
@@ -135,16 +128,14 @@ bool Pipeline::start(const Config &c, QString *error)
                      .arg(gop)
                      .arg(h264);
     }
-    Q_EMIT log(u"Picture: source shape %1×%2 → %3×%4 inside %5×%6 (bars %7/%8 px left/right, %9/%10 px top/bottom)"_s.arg(sw)
-                   .arg(sh)
-                   .arg(fw)
-                   .arg(fh)
-                   .arg(c.width)
-                   .arg(c.height)
-                   .arg(left)
-                   .arg(right)
-                   .arg(top)
-                   .arg(bottom));
+    Q_EMIT log(u"Picture: %1×%2 inside %3×%4 (bars %5/%6 px left/right, %7/%8 px top/bottom)"_s.arg(m_fit.w)
+                   .arg(m_fit.h)
+                   .arg(m_outW)
+                   .arg(m_outH)
+                   .arg(m_fit.left)
+                   .arg(m_fit.right)
+                   .arg(m_fit.top)
+                   .arg(m_fit.bottom));
     video += u"h264parse config-interval=-1 ! queue ! mux. "_s;
 
     const QString aac = hasElement("fdkaacenc") ? u"fdkaacenc bitrate=%1"_s.arg(c.audioKbps * 1000)
@@ -179,6 +170,14 @@ bool Pipeline::start(const Config &c, QString *error)
     gst_pipeline_use_clock(GST_PIPELINE(m_pipeline), clock);
     gst_object_unref(clock);
     m_encoder = gst_bin_get_by_name(GST_BIN(m_pipeline), "enc");
+    m_fitCaps = gst_bin_get_by_name(GST_BIN(m_pipeline), "fitcaps");
+    m_box = gst_bin_get_by_name(GST_BIN(m_pipeline), "box");
+    if (GstElement *scaler = gst_bin_get_by_name(GST_BIN(m_pipeline), "fitscale")) {
+        GstPad *sink = gst_element_get_static_pad(scaler, "sink");
+        gst_pad_add_probe(sink, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, GstPadProbeCallback(&Pipeline::onScalerEvent), this, nullptr);
+        gst_object_unref(sink);
+        gst_object_unref(scaler);
+    }
     if (gst_element_set_state(m_pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
         QString why;
         GstBus *bus = gst_element_get_bus(m_pipeline);
@@ -204,6 +203,14 @@ bool Pipeline::start(const Config &c, QString *error)
 void Pipeline::stop()
 {
     m_busTimer.stop();
+    if (m_fitCaps) {
+        gst_object_unref(m_fitCaps);
+        m_fitCaps = nullptr;
+    }
+    if (m_box) {
+        gst_object_unref(m_box);
+        m_box = nullptr;
+    }
     if (m_encoder) {
         gst_object_unref(m_encoder);
         m_encoder = nullptr;
@@ -269,4 +276,77 @@ void Pipeline::pollBus()
         return;
     }
     gst_object_unref(bus);
+}
+
+Pipeline::Fit Pipeline::fitInside(int srcW, int srcH, int outW, int outH)
+{
+    Fit f;
+    srcW = qMax(1, srcW);
+    srcH = qMax(1, srcH);
+    f.w = outW;
+    f.h = int(qRound(double(outW) * srcH / srcW));
+    if (f.h > outH) {
+        f.h = outH;
+        f.w = int(qRound(double(outH) * srcW / srcH));
+    }
+    f.w = qMax(2, f.w & ~1);
+    f.h = qMax(2, f.h & ~1);
+    f.left = ((outW - f.w) / 2) & ~1;
+    f.top = ((outH - f.h) / 2) & ~1;
+    f.right = outW - f.w - f.left;
+    f.bottom = outH - f.h - f.top;
+    return f;
+}
+
+void Pipeline::applyFit(const Fit &f)
+{
+    if (!m_fitCaps || !m_box) {
+        return;
+    }
+    GstCaps *caps = gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "I420", "width", G_TYPE_INT, f.w, "height",
+                                        G_TYPE_INT, f.h, "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1, nullptr);
+    g_object_set(m_box, "left", -f.left, "right", -f.right, "top", -f.top, "bottom", -f.bottom, nullptr);
+    g_object_set(m_fitCaps, "caps", caps, nullptr);
+    gst_caps_unref(caps);
+    m_fit = f;
+}
+
+// Streaming thread: the scaler's input caps changed (first caps, or KWin resized
+// the stream, e.g. a shared window was resized). Keep the delivered shape.
+int Pipeline::onScalerEvent(GstPad *, GstPadProbeInfo *info, void *self)
+{
+    auto *p = static_cast<Pipeline *>(self);
+    GstEvent *event = GST_PAD_PROBE_INFO_EVENT(info);
+    if (GST_EVENT_TYPE(event) != GST_EVENT_CAPS) {
+        return GST_PAD_PROBE_OK;
+    }
+    GstCaps *caps = nullptr;
+    gst_event_parse_caps(event, &caps);
+    const GstStructure *st = gst_caps_get_structure(caps, 0);
+    int w = 0, h = 0, parN = 1, parD = 1;
+    if (!gst_structure_get_int(st, "width", &w) || !gst_structure_get_int(st, "height", &h) || w <= 0 || h <= 0) {
+        return GST_PAD_PROBE_OK;
+    }
+    gst_structure_get_fraction(st, "pixel-aspect-ratio", &parN, &parD);
+    const Fit fit = fitInside(w * qMax(1, parN), h * qMax(1, parD), p->m_outW, p->m_outH);
+    if (fit == p->m_fit) {
+        return GST_PAD_PROBE_OK;
+    }
+    p->applyFit(fit);
+    QMetaObject::invokeMethod(
+        p,
+        [p, w, h, fit] {
+            Q_EMIT p->log(u"Source is now %1×%2: picture %3×%4 inside %5×%6 (bars %7/%8 px left/right, %9/%10 px top/bottom)"_s.arg(w)
+                              .arg(h)
+                              .arg(fit.w)
+                              .arg(fit.h)
+                              .arg(p->m_outW)
+                              .arg(p->m_outH)
+                              .arg(fit.left)
+                              .arg(fit.right)
+                              .arg(fit.top)
+                              .arg(fit.bottom));
+        },
+        Qt::QueuedConnection);
+    return GST_PAD_PROBE_OK;
 }
