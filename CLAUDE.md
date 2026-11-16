@@ -91,10 +91,13 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   memory) filter right after `pipewiresrc` keeps KWin on plain buffers, as every working run had.
 - **The TV fell minutes behind** (12 min after ~30 min) when scaling/letterboxing ran on the CPU: 2880×1800 → 1080p
   managed ~42 fps while frames were stamped for 60, so the stream ran at ~60% of real time. Now each encoder path
-  scales and letterboxes on its own device (vapostproc+vacompositor ~600 fps, cudaconvertscale+cudacompositor ~400 fps,
+  scales and letterboxes on its own device (AMD: vapostproc to the fitted shape + a second vapostproc add-borders + videorate, because
+  **vacompositor fails in the radeonsi driver with PipeWire input** (`vaEndPicture: operation failed`, reproduced via
+  pipewiresink → pipewiresrc; it only worked with test patterns); cudaconvertscale+cudacompositor ~400 fps,
   multithreaded videoconvert/videoscale + compositor for x264) and the **compositor outputs exactly <fps> frames per
-  second of real time** (reuses the last picture, drops extras); a leaky 1-buffer queue in front drops frames if scaling
-  is slow. videorate is gone. Tested: 20 fps live input → steady 60 fps at 100% real-time speed on all three paths.
+  second of real time** (reuses the last picture, drops extras); no leaky queue in front: with a PipeWire source, leaky
+  queue + compositor dies with "Internal data stream error" (reproduced via pipewiresink → pipewiresrc); PipeWire
+  itself skips frames when the consumer is busy. videorate is gone. Tested: 20 fps live input → steady 60 fps at 100% real-time speed on all three paths.
 - **Letterboxing is live**: the scaler (`fitscale`) asks for the source's own shape so KWin renders straight at that size
   (no stretch-then-squeeze), the compositor (`comp`) places it on a black frame. A pad probe on the scaler's input re-fits caps (`fitcaps`) and
   the picture position (compositor pad `sink_0` xpos/ypos) when the delivered shape changes (resized shared window), without restarting the stream. KWin delivers the

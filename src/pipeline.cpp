@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 #include "pipeline.h"
 
+#include <QRegularExpression>
+
 #include <gst/gst.h>
 
 #include <unistd.h>
@@ -87,8 +89,7 @@ bool Pipeline::start(const Config &c, QString *error)
     // compositor places it on a black frame of the TV mode. The compositor also
     // produces exactly <fps> frames per second of real time, reusing the last
     // picture when KDE sends none (it only sends on screen changes) and dropping
-    // extras, so the stream can never fall behind real time. The leaky queue in
-    // front drops frames instead of piling them up if scaling is ever slow.
+    // extras, so the stream can never fall behind real time.
     // When the delivered shape changes (resized window) onScalerEvent() re-fits live.
     m_outW = c.width;
     m_outH = c.height;
@@ -97,32 +98,44 @@ bool Pipeline::start(const Config &c, QString *error)
     // open, it offers its tiled DMA-BUFs (e.g. AMD modifier 0x0200000010401b04),
     // which vapostproc accepted in negotiation and then failed on
     // ("Internal data stream error"). Every working run used system memory.
-    QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%3 ! video/x-raw ! "
-                    "queue max-size-buffers=1 leaky=downstream ! "_s.arg(::dup(c.pipewireFd))
+    // No leaky queue here: with a PipeWire source, leaky queue + compositor dies with
+    // "Internal data stream error" (reproduced with pipewiresink -> pipewiresrc). The
+    // compositor already holds real time, and PipeWire skips frames when we're busy.
+    QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%3 ! video/x-raw ! "_s.arg(::dup(c.pipewireFd))
                         .arg(c.node)
                         .arg(frameMs);
-    QString scale, comp, mem;
+    QString scale, place, mem;
+    const QString format = m_encoderName == u"x264"_s ? u"I420"_s : u"NV12"_s;
     if (m_encoderName == u"vaapi"_s) {
+        // AMD: vacompositor fails in the driver with PipeWire input ("vaEndPicture:
+        // operation failed"), so a second vapostproc adds the borders around the
+        // already correctly shaped picture and videorate holds the frame rate.
         mem = u"(memory:VAMemory)"_s;
         scale = u"vapostproc name=fitscale"_s;
-        comp = u"vacompositor"_s;
-    } else if (m_encoderName == u"nvenc"_s) {
-        mem = u"(memory:CUDAMemory)"_s;
-        scale = u"cudaupload ! cudaconvertscale name=fitscale"_s;
-        comp = u"cudacompositor"_s;
+        place = u"vapostproc add-borders=true ! video/x-raw%1,format=%2,%3,pixel-aspect-ratio=1/1 ! videorate ! "
+                "video/x-raw%1,framerate=%4/1 ! "_s.arg(mem, format, size)
+                    .arg(c.fps);
     } else {
-        scale = u"videoconvert n-threads=0 ! videoscale name=fitscale n-threads=0"_s;
-        comp = u"compositor background=black"_s;
+        // NVIDIA / software: the compositor places the picture on a black frame and
+        // emits exactly <fps> frames per second of real time.
+        QString comp;
+        if (m_encoderName == u"nvenc"_s) {
+            mem = u"(memory:CUDAMemory)"_s;
+            scale = u"cudaupload ! cudaconvertscale name=fitscale"_s;
+            comp = u"cudacompositor"_s;
+        } else {
+            scale = u"videoconvert n-threads=0 ! videoscale name=fitscale n-threads=0"_s;
+            comp = u"compositor background=black"_s;
+        }
+        place = u"%1 name=comp sink_0::xpos=%2 sink_0::ypos=%3 ! video/x-raw%4,format=%5,%6,framerate=%7/1,pixel-aspect-ratio=1/1 ! "_s
+                    .arg(comp)
+                    .arg(m_fit.left)
+                    .arg(m_fit.top)
+                    .arg(mem, format, size)
+                    .arg(c.fps);
     }
-    const QString format = m_encoderName == u"x264"_s ? u"I420"_s : u"NV12"_s;
     m_fitCapsTemplate = u"video/x-raw%1,format=%2,width=%3,height=%4,pixel-aspect-ratio=1/1"_s.arg(mem, format);
-    video += u"%1 ! capsfilter name=fitcaps caps=\"%2\" ! "
-             "%3 name=comp sink_0::xpos=%4 sink_0::ypos=%5 ! video/x-raw%6,format=%7,%8,framerate=%9/1,pixel-aspect-ratio=1/1 ! "_s
-                 .arg(scale, m_fitCapsTemplate.arg(m_fit.w).arg(m_fit.h), comp)
-                 .arg(m_fit.left)
-                 .arg(m_fit.top)
-                 .arg(mem, format, size)
-                 .arg(c.fps);
+    video += u"%1 ! capsfilter name=fitcaps caps=\"%2\" ! %3"_s.arg(scale, m_fitCapsTemplate.arg(m_fit.w).arg(m_fit.h), place);
     if (m_encoderName == u"vaapi"_s) {
         video += u"vah264enc name=enc bitrate=%1 rate-control=cbr key-int-max=%2 b-frames=0 target-usage=%3 ! %4 ! "_s
                      .arg(c.videoKbps)
@@ -169,6 +182,7 @@ bool Pipeline::start(const Config &c, QString *error)
                             .arg(c.localPort);
 
     const QByteArray desc = (video + audio + out).toUtf8();
+    Q_EMIT log(u"Pipeline: %1"_s.arg(QString::fromUtf8(desc).replace(QRegularExpression(u"fd=\\d+"_s), u"fd=…"_s)));
     GError *err = nullptr;
     m_pipeline = gst_parse_launch(desc.constData(), &err);
     if (!m_pipeline || err) {
@@ -315,11 +329,11 @@ Pipeline::Fit Pipeline::fitInside(int srcW, int srcH, int outW, int outH)
 
 void Pipeline::applyFit(const Fit &f)
 {
-    if (!m_fitCaps || !m_box) {
+    if (!m_fitCaps) {
         return;
     }
     GstCaps *caps = gst_caps_from_string(m_fitCapsTemplate.arg(f.w).arg(f.h).toUtf8().constData());
-    if (GstPad *pad = gst_element_get_static_pad(m_box, "sink_0")) {
+    if (GstPad *pad = m_box ? gst_element_get_static_pad(m_box, "sink_0") : nullptr) {
         g_object_set(pad, "xpos", f.left, "ypos", f.top, nullptr);
         gst_object_unref(pad);
     }
