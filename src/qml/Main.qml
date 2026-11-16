@@ -317,17 +317,24 @@ Kirigami.ApplicationWindow {
                     onClicked: cast.clearLog()
                 }
             }
-            Controls.TextArea {
-                id: logArea
+            Controls.ScrollView {
+                id: logScroll
                 visible: showLog.checked
                 Layout.fillWidth: true
                 Layout.preferredHeight: Kirigami.Units.gridUnit * 14
-                readOnly: true
-                wrapMode: TextEdit.Wrap
-                font.family: "monospace"
-                font.pointSize: Kirigami.Theme.smallFont.pointSize
-                text: cast.log
-                onTextChanged: cursorPosition = length
+                // follow new lines only while the view is already at the bottom
+                property bool atBottom: true
+                Controls.ScrollBar.vertical.onPositionChanged: atBottom = Controls.ScrollBar.vertical.position + Controls.ScrollBar.vertical.size >= 0.999
+
+                Controls.TextArea {
+                    id: logArea
+                    readOnly: true
+                    wrapMode: TextEdit.Wrap
+                    font.family: "monospace"
+                    font.pointSize: Kirigami.Theme.smallFont.pointSize
+                    text: cast.log
+                    onTextChanged: if (logScroll.atBottom) cursorPosition = length
+                }
             }
 
             Controls.Label {
