@@ -91,7 +91,8 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   memory) filter right after `pipewiresrc` keeps KWin on plain buffers, as every working run had.
 - **The TV fell minutes behind** (12 min after ~30 min) when scaling/letterboxing ran on the CPU: 2880×1800 → 1080p
   managed ~42 fps while frames were stamped for 60, so the stream ran at ~60% of real time. Now each encoder path
-  scales and letterboxes on its own device (AMD: vapostproc to the fitted shape + a second vapostproc add-borders + videorate, because
+  scales and letterboxes on its own device (AMD: vapostproc to the fitted shape + a second vapostproc add-borders **in BGRx** (its borders are zeros: green in NV12, black in
+  RGB) + a vapostproc to NV12 + videorate, because
   **vacompositor fails in the radeonsi driver with PipeWire input** (`vaEndPicture: operation failed`, reproduced via
   pipewiresink → pipewiresrc; it only worked with test patterns); cudaconvertscale+cudacompositor ~400 fps,
   multithreaded videoconvert/videoscale + compositor for x264) and the **compositor outputs exactly <fps> frames per

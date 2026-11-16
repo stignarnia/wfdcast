@@ -324,7 +324,20 @@ Kirigami.ApplicationWindow {
                 Layout.preferredHeight: Kirigami.Units.gridUnit * 14
                 // follow new lines only while the view is already at the bottom
                 property bool atBottom: true
-                Controls.ScrollBar.vertical.onPositionChanged: atBottom = Controls.ScrollBar.vertical.position + Controls.ScrollBar.vertical.size >= 0.999
+                readonly property Flickable flick: contentItem
+                function scrollToEnd() {
+                    flick.contentY = Math.max(0, flick.contentHeight - flick.height)
+                }
+                // only a user scroll changes atBottom; following new text keeps it true
+                Connections {
+                    target: logScroll.flick
+                    function onMovementEnded() {
+                        logScroll.atBottom = logScroll.flick.contentY >= logScroll.flick.contentHeight - logScroll.flick.height - 4
+                    }
+                }
+                Controls.ScrollBar.vertical.onPressedChanged: if (!Controls.ScrollBar.vertical.pressed)
+                    atBottom = Controls.ScrollBar.vertical.position + Controls.ScrollBar.vertical.size >= 0.995
+                onVisibleChanged: if (visible) Qt.callLater(scrollToEnd)
 
                 Controls.TextArea {
                     id: logArea
@@ -333,7 +346,7 @@ Kirigami.ApplicationWindow {
                     font.family: "monospace"
                     font.pointSize: Kirigami.Theme.smallFont.pointSize
                     text: cast.log
-                    onTextChanged: if (logScroll.atBottom) cursorPosition = length
+                    onTextChanged: if (logScroll.atBottom) Qt.callLater(logScroll.scrollToEnd)
                 }
             }
 

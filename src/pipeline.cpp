@@ -110,10 +110,12 @@ bool Pipeline::start(const Config &c, QString *error)
         // AMD: vacompositor fails in the driver with PipeWire input ("vaEndPicture:
         // operation failed"), so a second vapostproc adds the borders around the
         // already correctly shaped picture and videorate holds the frame rate.
+        // Borders are added in BGRx: vapostproc fills them with zeros, which is black
+        // in RGB but green in NV12. A last vapostproc converts to NV12 for the encoder.
         mem = u"(memory:VAMemory)"_s;
         scale = u"vapostproc name=fitscale"_s;
-        place = u"vapostproc add-borders=true ! video/x-raw%1,format=%2,%3,pixel-aspect-ratio=1/1 ! videorate ! "
-                "video/x-raw%1,framerate=%4/1 ! "_s.arg(mem, format, size)
+        place = u"vapostproc add-borders=true ! video/x-raw%1,format=BGRx,%2,pixel-aspect-ratio=1/1 ! "
+                "vapostproc ! video/x-raw%1,format=NV12 ! videorate ! video/x-raw%1,framerate=%3/1 ! "_s.arg(mem, size)
                     .arg(c.fps);
     } else {
         // NVIDIA / software: the compositor places the picture on a black frame and
@@ -134,7 +136,8 @@ bool Pipeline::start(const Config &c, QString *error)
                     .arg(mem, format, size)
                     .arg(c.fps);
     }
-    m_fitCapsTemplate = u"video/x-raw%1,format=%2,width=%3,height=%4,pixel-aspect-ratio=1/1"_s.arg(mem, format);
+    m_fitCapsTemplate = u"video/x-raw%1,format=%2,width=%3,height=%4,pixel-aspect-ratio=1/1"_s.arg(
+        mem, m_encoderName == u"vaapi"_s ? u"BGRx"_s : format);
     video += u"%1 ! capsfilter name=fitcaps caps=\"%2\" ! %3"_s.arg(scale, m_fitCapsTemplate.arg(m_fit.w).arg(m_fit.h), place);
     if (m_encoderName == u"vaapi"_s) {
         video += u"vah264enc name=enc bitrate=%1 rate-control=cbr key-int-max=%2 b-frames=0 target-usage=%3 ! %4 ! "_s
