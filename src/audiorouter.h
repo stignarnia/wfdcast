@@ -16,6 +16,8 @@ public:
     // Returns the PulseAudio source to record ("" = silence). Fills *error on problems.
     QString setup(const QString &mode, QString *error);
     void restore();
+    // Remove a "wfdcast" output left by a run that was killed, and leave a real default output.
+    static void cleanupStale();
 
 private:
     static QString pactl(const QStringList &args, bool *ok = nullptr);

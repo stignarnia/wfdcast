@@ -99,7 +99,7 @@ Kirigami.ApplicationWindow {
                     Kirigami.FormData.label: i18n("Remembered TV:")
                     Controls.Label {
                         text: settings.tvMac ? (settings.tvName || settings.tvMac)
-                                             + (settings.tvPsk ? i18n(" (paired)") : "")
+                                             + (settings.tvSsid ? i18n(" (paired, passphrase in KWallet)") : "")
                                              : i18n("none, you choose it on first cast")
                     }
                     Controls.Button {

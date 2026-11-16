@@ -27,7 +27,7 @@
 ## Architecture
 
 ```
-Main.qml ── cast (CastController) ── settings (Settings, ~/.config/wfdcastrc, mode 600: holds the TV passphrase)
+Main.qml ── cast (CastController) ── settings (Settings, ~/.config/wfdcastrc, mode 600; TV passphrase in KWallet via QtKeychain, service "wfdcast", key = TV address)
                 │
                 ├─ Portal       xdg-desktop-portal ScreenCast → KDE picker (screen | window | virtual) → PipeWire fd + node
                 ├─ AudioRouter  pactl: "tv" = null sink "wfdcast" made default (monitor recorded) | "mirror" = default sink monitor | "none"
@@ -60,6 +60,34 @@ computed from macroblocks (3.1/3.2/4.1/4.2) and capped to the TV's max level. Th
 CEA `0001ffff` and VESA `0f3fffff` (includes 1440×900, 1366×768, 1600×900, 1680×1050; not 1920×1200/1600×1200).
 The encoder speed/quality slider (1..7) maps to x264 `speed-preset` ultrafast..slow, VA-API `target-usage` 7..1,
 NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the encoder).
+
+## Lessons from the first real-TV runs (all handled in the code; don't regress them)
+
+- **NetworkManager grabs the new interface** and registers it with wpa_supplicant before it can be marked unmanaged; a
+  new device also *briefly shows as unmanaged* before NM takes it. The helper always runs `nmcli device set <if> managed no`
+  and requires `unmanaged` to hold for 1 s, then drops NM's leftover wpa_supplicant registration and creates its own.
+  If NM keeps managing it, NM scans on it and the Wi-Fi Direct join can't scan (formation failure after ~10 s).
+- **wpa_supplicant's search does one full scan, then only social channels 1/6/11**; a TV hosting on 5 GHz is missed.
+  Search in short rounds (setting `searchRound`) with `DiscoveryType: progressive`, restarted on `FindStopped`.
+- **No D-Bus signal for the TV's answer during a join**: `ProvisionDiscoveryPBCResponse` is not emitted on the join path,
+  and wpa_supplicant's temporary group interface can't come up (wlan0 + our interface use both client slots:
+  `Could not set interface p2p-wlan0-N flags (UP): Device or resource busy`). WPS on our interface starts when the join
+  scan ends (main interface `Scanning` true→false, ≥2 s after the request) + 1 s, on `GroupFormationFailure`, or after
+  `answerTimeout`. Starting WPS earlier starves the join scan.
+- **DHCP replies must be read at link level** (AF_PACKET): on an interface without an address the kernel input path drops
+  the TV's broadcast OFFER before a UDP socket sees it. Requests still go out over UDP.
+- **The WPS `Credentials` signal is not emitted** on this path. Read SSID/passphrase/BSSID from the network WPS created
+  (`CurrentNetwork` → `Properties`, `CurrentBSS`). This TV's key is a 64-hex PSK (`tvPskHex=true`): reuse it as `ay`
+  (strings are quoted by wpa_supplicant = passphrase).
+- **Frame pacing**: KWin sends frames only on damage. `pipewiresrc keepalive-time` = one frame interval, else the TV gets
+  bursts/gaps and its player stalls ("stuck", not "late"). Pipeline uses the **system clock** (pipewiresrc's clock ticks
+  irregularly) and `audiorate`; `pulsesrc` without `do-timestamp` (arrival-time stamps jitter → choppy audio).
+- **Live bitrate works** on all three encoders (measured on the wire: 1.4 → ~30 Mbit/s within a second with VA-API/NVENC CBR;
+  x264 treats it as an average ceiling, ~10–14 Mbit/s at 17 on desktop content).
+- **Audio leftovers**: a killed app left the null sink loaded. The app quits through the event loop on SIGTERM/SIGINT/SIGHUP
+  (KSignalHandler) and removes stale `wfdcast` sinks at startup and before each cast.
+- The TV's Accept dialog shows the sender name only after a first successful join (it learns it from the P2P IE in our
+  association request); wpa_supplicant's own P2P `DeviceName` is empty on this machine, so the request itself carries none.
 
 ## Why the design looks like this: reference TV (Sony BRAVIA DE1, Android TV 14, firmware UKN7.260716.030, MediaTek mt9690)
 

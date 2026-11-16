@@ -45,7 +45,6 @@ Settings::Settings(QObject *parent)
         {u"tvMac"_s, QString()},
         {u"tvName"_s, QString()},
         {u"tvSsid"_s, QString()},
-        {u"tvPsk"_s, QString()},
         {u"tvPskHex"_s, false},
         {u"tvBssid"_s, QString()},
     };
@@ -112,7 +111,7 @@ void Settings::save(const QString &key, const QVariant &v)
 {
     m_group.writeEntry(key, v);
     m_group.sync();
-    // The file holds the TV's Wi-Fi Direct passphrase: owner-only.
+    // Owner-only: it names the TV and its Wi-Fi Direct network (the passphrase is in KWallet).
     const QString path = QStandardPaths::locate(QStandardPaths::GenericConfigLocation, u"wfdcastrc"_s);
     if (!path.isEmpty()) {
         QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);

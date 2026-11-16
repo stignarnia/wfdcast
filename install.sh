@@ -41,7 +41,7 @@ if ((${#missing[@]})); then
     printf 'install.sh: missing: %s\n' "${missing[@]}" >&2
     echo "On Arch: sudo pacman -S --needed cmake base-devel extra-cmake-modules kirigami ki18n kconfig kcoreaddons" \
          "qt6-declarative gstreamer gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav gst-plugin-pipewire" \
-         "python-gobject iw" >&2
+         "python-gobject iw qtkeychain-qt6" >&2
     exit 1
 fi
 

@@ -27,9 +27,30 @@ QString AudioRouter::pactl(const QStringList &args, bool *ok)
     return QString::fromUtf8(p.readAllStandardOutput()).trimmed();
 }
 
+void AudioRouter::cleanupStale()
+{
+    const QStringList modules = pactl({u"list"_s, u"short"_s, u"modules"_s}).split(u'\n', Qt::SkipEmptyParts);
+    for (const QString &line : modules) {
+        if (line.contains(u"module-null-sink"_s) && line.contains(u"sink_name="_s + kSinkName)) {
+            pactl({u"unload-module"_s, line.section(u'\t', 0, 0)});
+        }
+    }
+    if (pactl({u"get-default-sink"_s}) == kSinkName) { // still pointing at a removed output
+        const QStringList sinks = pactl({u"list"_s, u"short"_s, u"sinks"_s}).split(u'\n', Qt::SkipEmptyParts);
+        for (const QString &line : sinks) {
+            const QString name = line.section(u'\t', 1, 1);
+            if (!name.isEmpty() && name != kSinkName) {
+                pactl({u"set-default-sink"_s, name});
+                break;
+            }
+        }
+    }
+}
+
 QString AudioRouter::setup(const QString &mode, QString *error)
 {
     restore();
+    cleanupStale();
     if (mode == u"none"_s) {
         return {};
     }

@@ -124,7 +124,8 @@ bool Pipeline::start(const Config &c, QString *error)
         // No do-timestamp: audio sources stamp buffers from the sample count, which
         // is smooth; arrival-time stamps jitter and the TV plays audio in chunks.
         : u"pulsesrc device=\"%1\" provide-clock=false"_s.arg(c.audioDevice);
-    const QString audio = audioSrc + u" ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! "_s + aac
+    // audiorate: continuous audio (no gaps/overlaps) into the muxer
+    const QString audio = audioSrc + u" ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! audiorate ! "_s + aac
         + u" ! aacparse ! queue ! mux. "_s;
 
     const QString out = u"mpegtsmux name=mux alignment=7 ! rtpmp2tpay ! "
@@ -143,6 +144,11 @@ bool Pipeline::start(const Config &c, QString *error)
         stop();
         return false;
     }
+    // Steady master clock. Otherwise the screen source's clock is picked, which
+    // ticks only when KDE delivers frames, and audio gets resynced to it in jerks.
+    GstClock *clock = gst_system_clock_obtain();
+    gst_pipeline_use_clock(GST_PIPELINE(m_pipeline), clock);
+    gst_object_unref(clock);
     m_encoder = gst_bin_get_by_name(GST_BIN(m_pipeline), "enc");
     if (gst_element_set_state(m_pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
         *error = u"The stream did not start (encoder %1)."_s.arg(m_encoderName);

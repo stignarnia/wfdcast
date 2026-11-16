@@ -6,6 +6,7 @@
 #include <KAboutData>
 #include <KLocalizedQmlContext>
 #include <KLocalizedString>
+#include <KSignalHandler>
 #include <QApplication>
 #include <QIcon>
 #include <QQmlApplicationEngine>
@@ -13,6 +14,8 @@
 #include <QQuickStyle>
 
 #include <gst/gst.h>
+
+#include <csignal>
 
 using namespace Qt::StringLiterals;
 
@@ -30,6 +33,13 @@ int main(int argc, char *argv[])
     if (qEnvironmentVariableIsEmpty("QT_QUICK_CONTROLS_STYLE")) {
         QQuickStyle::setStyle(u"org.kde.desktop"_s);
     }
+
+    // Quit through the event loop on signals so ~CastController restores audio,
+    // stops the helper and closes the portal session.
+    for (int sig : {SIGTERM, SIGINT, SIGHUP}) {
+        KSignalHandler::self()->watchSignal(sig);
+    }
+    QObject::connect(KSignalHandler::self(), &KSignalHandler::signalReceived, &app, &QCoreApplication::quit);
 
     Settings settings;
     CastController controller(&settings);

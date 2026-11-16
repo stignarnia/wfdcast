@@ -16,6 +16,7 @@ find_package(Qt6 6.6 REQUIRED COMPONENTS Core Gui Widgets Qml Quick QuickControl
 find_package(KF6 6.0 REQUIRED COMPONENTS Kirigami I18n CoreAddons Config)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GST REQUIRED IMPORTED_TARGET gstreamer-1.0)
+find_package(Qt6Keychain REQUIRED) # TV passphrase in KWallet (Secret Service elsewhere)
 
 qt_policy(SET QTP0001 NEW)
 qt_policy(SET QTP0004 NEW)
@@ -48,6 +49,7 @@ target_link_libraries(wfdcast PRIVATE
     Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::DBus Qt6::Network
     KF6::I18n KF6::I18nQml KF6::CoreAddons KF6::ConfigCore
     PkgConfig::GST
+    qt6keychain
 )
 
 install(TARGETS wfdcast ${KDE_INSTALL_TARGETS_DEFAULT_ARGS})

@@ -7,9 +7,16 @@
 #include <QDateTime>
 #include <QJsonDocument>
 
+#include <qt6keychain/keychain.h>
+
 #include <unistd.h>
 
 using namespace Qt::StringLiterals;
+
+namespace
+{
+const QString kKeychainService = QStringLiteral("wfdcast");
+}
 
 #ifndef WFDCAST_HELPER_PATH
 #define WFDCAST_HELPER_PATH "/usr/local/lib/wfdcast/wfdcast-helper.py"
@@ -54,6 +61,32 @@ CastController::CastController(Settings *settings, QObject *parent)
         sendHelper({{u"cmd"_s, u"reassociate"_s}});
         m_tvWait.start(m_settings->getInt(u"tvWaitSeconds"_s) * 1000);
     });
+
+    AudioRouter::cleanupStale();
+}
+
+void CastController::storeSecret(const QString &mac, const QString &psk)
+{
+    auto *job = new QKeychain::WritePasswordJob(kKeychainService);
+    job->setAutoDelete(true);
+    job->setKey(mac);
+    job->setTextData(psk);
+    connect(job, &QKeychain::Job::finished, this, [this](QKeychain::Job *j) {
+        appendLog(j->error() ? u"Could not save the pairing in KWallet: "_s + j->errorString()
+                             : u"Pairing saved in KWallet: next time no Accept on the TV is needed."_s);
+    });
+    job->start();
+}
+
+void CastController::deleteSecret(const QString &mac)
+{
+    if (mac.isEmpty()) {
+        return;
+    }
+    auto *job = new QKeychain::DeletePasswordJob(kKeychainService);
+    job->setAutoDelete(true);
+    job->setKey(mac);
+    job->start();
 }
 
 CastController::~CastController()
@@ -240,14 +273,13 @@ void CastController::onHelperEvent(const QJsonObject &e)
         setStatus(i18n("Press Accept on the TV."));
     } else if (ev == u"credentials"_s) {
         m_settings->put(u"tvSsid"_s, e.value(u"ssid"_s).toString());
-        m_settings->put(u"tvPsk"_s, e.value(u"psk"_s).toString());
         m_settings->put(u"tvPskHex"_s, e.value(u"psk_hex"_s).toBool());
         m_settings->put(u"tvBssid"_s, e.value(u"bssid"_s).toString());
-        appendLog(u"Pairing saved: next time no Accept on the TV is needed."_s);
+        storeSecret(m_targetMac, e.value(u"psk"_s).toString());
     } else if (ev == u"forget"_s) {
         m_settings->put(u"tvSsid"_s, QString());
-        m_settings->put(u"tvPsk"_s, QString());
         m_settings->put(u"tvBssid"_s, QString());
+        deleteSecret(e.value(u"mac"_s).toString());
     } else if (ev == u"connected"_s) {
         setState(u"waiting"_s);
         setStatus(i18n("Connected to the TV's network (%1). Waiting for the TV to start the stream…",
@@ -267,11 +299,33 @@ void CastController::connectTo(const QString &mac)
     m_targetMac = mac;
     setState(u"joining"_s);
     setStatus(i18n("Connecting to %1…", m_targetName.isEmpty() ? mac : m_targetName));
+    if (m_settings->getString(u"tvMac"_s) != mac || m_settings->getString(u"tvSsid"_s).isEmpty()) {
+        sendConnect(mac, QString());
+        return;
+    }
+    auto *job = new QKeychain::ReadPasswordJob(kKeychainService);
+    job->setAutoDelete(true);
+    job->setKey(mac);
+    connect(job, &QKeychain::Job::finished, this, [this, mac](QKeychain::Job *j) {
+        const QString psk = j->error() ? QString() : static_cast<QKeychain::ReadPasswordJob *>(j)->textData();
+        if (j->error() && j->error() != QKeychain::EntryNotFound) {
+            appendLog(u"Could not read the pairing from KWallet: "_s + j->errorString());
+        }
+        sendConnect(mac, psk);
+    });
+    job->start();
+}
+
+void CastController::sendConnect(const QString &mac, const QString &psk)
+{
+    if (m_state != u"joining"_s) {
+        return; // stopped while KWallet was answering
+    }
     QJsonObject cmd{{u"cmd"_s, u"connect"_s}, {u"mac"_s, mac}};
-    if (!m_settings->getString(u"tvPsk"_s).isEmpty() && m_settings->getString(u"tvMac"_s) == mac) {
+    if (!psk.isEmpty()) {
         cmd.insert(u"creds"_s,
                    QJsonObject{{u"ssid"_s, m_settings->getString(u"tvSsid"_s)},
-                               {u"psk"_s, m_settings->getString(u"tvPsk"_s)},
+                               {u"psk"_s, psk},
                                {u"psk_hex"_s, m_settings->getBool(u"tvPskHex"_s)},
                                {u"bssid"_s, m_settings->getString(u"tvBssid"_s)}});
     }
@@ -294,7 +348,8 @@ void CastController::choosePeer(const QString &mac, const QString &name)
 
 void CastController::forgetTv()
 {
-    for (const QString &k : {u"tvMac"_s, u"tvName"_s, u"tvSsid"_s, u"tvPsk"_s, u"tvBssid"_s}) {
+    deleteSecret(m_settings->getString(u"tvMac"_s));
+    for (const QString &k : {u"tvMac"_s, u"tvName"_s, u"tvSsid"_s, u"tvBssid"_s}) {
         m_settings->put(k, QString());
     }
     m_settings->put(u"tvPskHex"_s, false);

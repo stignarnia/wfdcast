@@ -67,6 +67,10 @@ private:
     void onHelperEvent(const QJsonObject &e);
     void onHelperFinished(int code, QProcess::ExitStatus status);
     void connectTo(const QString &mac);
+    void sendConnect(const QString &mac, const QString &psk);
+    // The TV's Wi-Fi Direct passphrase lives in KWallet (via QtKeychain), keyed by the TV address.
+    void storeSecret(const QString &mac, const QString &psk);
+    void deleteSecret(const QString &mac);
     void onPlay(const QString &ip, int port, int w, int h, int fps);
     void onSessionEnded(const QString &reason);
     void onSettingChanged(const QString &key, const QVariant &value);

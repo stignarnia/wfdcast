@@ -15,6 +15,7 @@ Target = ki18n
 Target = kconfig
 Target = kcoreaddons
 Target = gstreamer
+Target = qtkeychain-qt6
 
 [Action]
 Description = Rebuilding WFD Cast for the updated libraries...
