@@ -67,19 +67,6 @@ QString Pipeline::resolveEncoder(const QString &wanted)
 
 bool Pipeline::start(const Config &c, QString *error)
 {
-    if (startOnce(c, error) || c.sourceWidth <= 0) {
-        return m_pipeline != nullptr;
-    }
-    // The capture refused every size of the source's shape: stream unpinned
-    // (KWin may then stretch) rather than not at all, and say so.
-    Q_EMIT log(u"Could not pin the capture to the source size (%1); streaming without it, the picture may be stretched."_s.arg(*error));
-    Config unpinned = c;
-    unpinned.sourceWidth = unpinned.sourceHeight = 0;
-    return startOnce(unpinned, error);
-}
-
-bool Pipeline::startOnce(const Config &c, QString *error)
-{
     stop();
     m_encoderName = resolveEncoder(c.encoder);
     if (m_encoderName.isEmpty()) {
@@ -95,54 +82,69 @@ bool Pipeline::startOnce(const Config &c, QString *error)
     // frame interval so the TV gets a steady stream; with gaps its player stalls
     // and catches up instead of running at a constant small delay.
     const int frameMs = qMax(1, 1000 / qMax(1, c.fps));
-    // Pin the capture to the source's real size: KWin renders the stream at
-    // whatever size downstream asks for, so without this it delivers the TV
-    // mode's size already stretched and add-borders has nothing to letterbox.
-    // The portal reports the logical size; on a scaled (HiDPI) screen KWin's
-    // frames are bigger. Offer the logical size and its 2x/3x multiples: all
-    // have the source's shape, so whichever KWin picks gets letterboxed right.
-    QString sourceCaps;
-    if (c.sourceWidth > 0 && c.sourceHeight > 0) {
-        QStringList sizes;
-        for (int k : {1, 2, 3}) {
-            sizes << u"video/x-raw,width=%1,height=%2"_s.arg(c.sourceWidth * k).arg(c.sourceHeight * k);
-        }
-        sourceCaps = u"capsfilter caps=\"%1\" ! "_s.arg(sizes.join(u"; "_s));
+    // Letterbox explicitly: scale whatever KWin delivers (it renders the stream
+    // at the size downstream asks for, possibly already stretched) to the size
+    // that keeps the source's true shape (the portal's size) inside the TV mode,
+    // then add the black borders with videobox. The TV stretches every mode to
+    // its panel, so the bars must be in the picture.
+    const int sw = c.sourceWidth > 0 ? c.sourceWidth : c.width;
+    const int sh = c.sourceHeight > 0 ? c.sourceHeight : c.height;
+    int fw = c.width, fh = int(qRound(double(c.width) * sh / sw));
+    if (fh > c.height) {
+        fh = c.height;
+        fw = int(qRound(double(c.height) * sw / sh));
     }
-    QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%4 ! %5"
-                    "queue max-size-buffers=2 leaky=downstream ! videorate ! video/x-raw,framerate=%3/1 ! "_s
+    fw &= ~1;
+    fh &= ~1;
+    const int left = ((c.width - fw) / 2) & ~1, top = ((c.height - fh) / 2) & ~1;
+    const int right = c.width - fw - left, bottom = c.height - fh - top;
+    QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%4 ! "
+                    "queue max-size-buffers=2 leaky=downstream ! videorate ! video/x-raw,framerate=%3/1 ! "
+                    "videoconvert ! videoscale ! video/x-raw,format=I420,width=%5,height=%6,pixel-aspect-ratio=1/1 ! "
+                    "videobox left=-%7 right=-%8 top=-%9 bottom=-%10 fill=black ! video/x-raw,%11 ! "_s
                         .arg(::dup(c.pipewireFd))
                         .arg(c.node)
                         .arg(c.fps)
                         .arg(frameMs)
-                        .arg(sourceCaps);
+                        .arg(fw)
+                        .arg(fh)
+                        .arg(left)
+                        .arg(right)
+                        .arg(top)
+                        .arg(bottom)
+                        .arg(size);
     if (m_encoderName == u"vaapi"_s) {
-        video += u"vapostproc add-borders=true ! video/x-raw(memory:VAMemory),format=NV12,%1,pixel-aspect-ratio=1/1 ! "
-                 "vah264enc name=enc bitrate=%2 rate-control=cbr key-int-max=%3 b-frames=0 target-usage=%4 ! %5 ! "_s
-                     .arg(size)
+        video += u"vapostproc ! video/x-raw(memory:VAMemory),format=NV12 ! "
+                 "vah264enc name=enc bitrate=%1 rate-control=cbr key-int-max=%2 b-frames=0 target-usage=%3 ! %4 ! "_s
                      .arg(c.videoKbps)
                      .arg(gop)
                      .arg(8 - q)
                      .arg(h264);
     } else if (m_encoderName == u"nvenc"_s) {
-        video += u"cudaupload ! cudaconvertscale add-borders=true ! "
-                 "video/x-raw(memory:CUDAMemory),format=NV12,%1,pixel-aspect-ratio=1/1 ! "
-                 "nvh264enc name=enc bitrate=%2 rc-mode=cbr gop-size=%3 bframes=0 zerolatency=true preset=p%4 "
-                 "tune=ultra-low-latency ! %5 ! "_s
-                     .arg(size)
+        video += u"cudaupload ! cudaconvertscale ! video/x-raw(memory:CUDAMemory),format=NV12 ! "
+                 "nvh264enc name=enc bitrate=%1 rc-mode=cbr gop-size=%2 bframes=0 zerolatency=true preset=p%3 "
+                 "tune=ultra-low-latency ! %4 ! "_s
                      .arg(c.videoKbps)
                      .arg(gop)
                      .arg(q)
                      .arg(h264);
     } else {
-        video += u"videoconvert ! videoscale add-borders=true ! video/x-raw,format=I420,%1,pixel-aspect-ratio=1/1 ! "
-                 "x264enc name=enc tune=zerolatency speed-preset=%2 bitrate=%3 key-int-max=%4 ! %5 ! "_s
-                     .arg(size)
+        video += u"x264enc name=enc tune=zerolatency speed-preset=%1 bitrate=%2 key-int-max=%3 ! %4 ! "_s
                      .arg(QString::fromLatin1(kX264Presets[q - 1]))
                      .arg(c.videoKbps)
                      .arg(gop)
                      .arg(h264);
     }
+    Q_EMIT log(u"Picture: source shape %1×%2 → %3×%4 inside %5×%6 (bars %7/%8 px left/right, %9/%10 px top/bottom)"_s.arg(sw)
+                   .arg(sh)
+                   .arg(fw)
+                   .arg(fh)
+                   .arg(c.width)
+                   .arg(c.height)
+                   .arg(left)
+                   .arg(right)
+                   .arg(top)
+                   .arg(bottom));
     video += u"h264parse config-interval=-1 ! queue ! mux. "_s;
 
     const QString aac = hasElement("fdkaacenc") ? u"fdkaacenc bitrate=%1"_s.arg(c.audioKbps * 1000)

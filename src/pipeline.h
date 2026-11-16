@@ -46,7 +46,6 @@ Q_SIGNALS:
 
 private:
     void pollBus();
-    bool startOnce(const Config &config, QString *error);
     static QString resolveEncoder(const QString &wanted);
 
     GstElement *m_pipeline = nullptr;

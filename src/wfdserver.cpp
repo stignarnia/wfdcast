@@ -240,21 +240,15 @@ bool WfdServer::chooseFormat(const QString &sinkFormats)
         return advertised(m) && (panelAspect <= 0 || qAbs(double(m.width) / m.height - panelAspect) < 0.02);
     };
 
-    // Match the source KDE gives us: exact size if the TV has it, else the
-    // smallest mode it fits in, else the biggest mode. Prefer the wanted
-    // frame rate, then the closest one.
+    // Send the biggest mode of the TV's shape it accepts: the reported source
+    // size is logical (a 2x screen has twice the pixels), the TV scales to its
+    // panel anyway, and the picture gets letterboxed inside it. Wanted frame
+    // rate first, then the closest.
     const int sw = m_wanted.sourceWidth > 0 ? m_wanted.sourceWidth : 1920;
     const int sh = m_wanted.sourceHeight > 0 ? m_wanted.sourceHeight : 1080;
     const Mode *best = nullptr;
     auto rank = [&](const Mode &m) {
-        const bool exact = m.width == sw && m.height == sh;
-        const bool fits = m.width >= sw && m.height >= sh;
-        const long area = long(m.width) * m.height;
-        // lower is better
-        return std::make_tuple(exact ? 0 : fits ? 1 : 2,
-                               qAbs(m.fps - m_wanted.fps),
-                               fits ? area : -area,
-                               -m.fps);
+        return std::make_tuple(qAbs(m.fps - m_wanted.fps), -long(m.width) * m.height, -m.fps);
     };
     for (const Mode &m : kModes) {
         if (supported(m) && (!best || rank(m) < rank(*best))) {
