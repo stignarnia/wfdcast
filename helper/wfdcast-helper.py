@@ -56,7 +56,7 @@ DEFAULTS = {
     "throughput": 200,         # Mbit/s announced in the WFD IE
     "find_timeout": 30,        # s to look for the TV
     "search_round": 10,        # s per Wi-Fi Direct search round (restarted until found)
-    "answer_timeout": 15,      # s to wait for the TV to answer the join request
+    "answer_timeout": 8,       # s after the join request before pairing starts anyway
     "accept_timeout": 120,     # s to wait for Accept on the TV
     "assoc_timeout": 20,       # s for a join with the saved passphrase
     "dhcp_timeout": 15,        # s for DHCP
@@ -270,6 +270,8 @@ class Helper:
         self.phase = "idle"
         self.target = None
         self.peer_path = None
+        self.join_scanning = False
+        self.join_sent_at = 0.0
         self.timer = None
         self.net = None
         self.new_creds = None
@@ -359,6 +361,8 @@ class Helper:
         # During a join, wpa_supplicant does not emit ProvisionDiscoveryPBCResponse: on the TV's
         # answer it goes straight to creating its temporary group interface (p2p-<iface>-N).
         self.subscribe(WPAS, "InterfaceAdded", WPAS_PATH, self.on_interface_added)
+        self.subscribe(P2P, "GroupFormationFailure", self.main, self.on_group_formation_failure)
+        self.subscribe(PROPS, "PropertiesChanged", self.main, self.on_main_props)
         self.subscribe(P2P, "ProvisionDiscoveryFailure", self.main, self.on_pd_failure)
         self.subscribe(WPS, "Credentials", self.wfd, self.on_credentials)
         self.subscribe(WPS, "Event", self.wfd, self.on_wps_event)
@@ -553,14 +557,38 @@ class Helper:
             "TV not found. Is Screen mirroring open on the TV?"))
 
     def join_request(self, peer_path):
+        """Ask the TV to let us join: wpa_supplicant scans for the TV's group,
+        sends it a provision discovery request (the TV shows Accept), and on the
+        answer tries to create its own temporary group interface. That last step
+        usually fails because wlan0 + our interface already use both client
+        slots, which is fine: our interface does the real join over WPS. WPS on
+        our interface must start only after that scan, or its own scans starve
+        the join scan, so it starts on the first sign the request went out."""
         self.phase = "answer"
         self.peer_path = peer_path
+        self.join_scanning = False
+        self.join_sent_at = time.monotonic()
         self.status("Asking the TV to let this computer join…")
         self.call(self.main, P2P, "Connect", "(a{sv})",
                   ({"peer": GLib.Variant("o", peer_path), "wps_method": GLib.Variant("s", "pbc"),
                     "join": GLib.Variant("b", True)},))
-        self.set_timer(int(self.o["answer_timeout"]), lambda: self.fail(
-            "The TV did not answer. Close and reopen Screen mirroring on the TV, then try again."))
+        # If no sign arrives, pair anyway: the TV keeps Accept open for minutes.
+        self.set_timer(int(self.o["answer_timeout"]), self.start_wps)
+
+    def on_main_props(self, iface, changed, _invalid):
+        if self.phase != "answer" or iface != IFACE or "Scanning" not in changed:
+            return
+        if changed["Scanning"]:
+            self.join_scanning = True
+        elif self.join_scanning and time.monotonic() - self.join_sent_at >= 2:
+            # (a background scan of the main Wi-Fi ending right away is not the join scan)
+            self.join_scanning = False
+            self.set_timer(1, self.start_wps)  # the request goes out right after the scan
+
+    def on_group_formation_failure(self, reason):
+        if self.phase == "answer":
+            log(f"wpa_supplicant's own group setup ended ({reason or 'no reason'}); pairing on our interface")
+            self.start_wps()
 
     def on_pd_response(self, path):
         if self.phase == "answer" and path == self.peer_path:
@@ -588,6 +616,8 @@ class Helper:
         return mac_bytes(self.target)
 
     def start_wps(self):
+        if self.phase != "answer":
+            return
         self.phase = "wps"
         emit("accept")
         self.call(self.wfd, WPS, "Start", "(a{sv})",

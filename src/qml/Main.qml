@@ -263,7 +263,7 @@ Kirigami.ApplicationWindow {
                 }
                 SettingSpin {
                     visible: showAdvanced.checked; enabled: !root.sessionLocked
-                    Kirigami.FormData.label: i18n("TV answer timeout:"); key: "answerTimeout"; unit: i18n("s"); from: 3; to: 120
+                    Kirigami.FormData.label: i18n("Pairing starts after:"); key: "answerTimeout"; unit: i18n("s"); from: 2; to: 60
                 }
                 SettingSpin {
                     visible: showAdvanced.checked; enabled: !root.sessionLocked

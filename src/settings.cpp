@@ -35,7 +35,7 @@ Settings::Settings(QObject *parent)
         {u"throughput"_s, 200}, // Mbit/s announced to the TV
         {u"findTimeout"_s, 60},
         {u"searchRound"_s, 10}, // s per Wi-Fi Direct search round
-        {u"answerTimeout"_s, 15},
+        {u"answerTimeout"_s, 8}, // s after the join request before pairing starts anyway
         {u"acceptTimeout"_s, 120},
         {u"assocTimeout"_s, 20},
         {u"dhcpTimeout"_s, 15},
