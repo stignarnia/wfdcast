@@ -563,7 +563,9 @@ class Helper:
     def connect_saved(self, c):
         self.phase = "saved"
         self.status("Connecting with the saved pairing…")
-        props = {"ssid": GLib.Variant("s", c["ssid"]), "psk": GLib.Variant("s", c["psk"]),
+        psk = (GLib.Variant("ay", bytes.fromhex(c["psk"])) if c.get("psk_hex")
+               else GLib.Variant("s", c["psk"]))
+        props = {"ssid": GLib.Variant("s", c["ssid"]), "psk": psk,
                  "key_mgmt": GLib.Variant("s", "WPA-PSK"), "proto": GLib.Variant("s", "RSN"),
                  "pairwise": GLib.Variant("s", "CCMP")}
         if c.get("bssid"):
@@ -681,8 +683,31 @@ class Helper:
             self.associated = False
             emit("disconnected")
 
+    def read_joined_network(self):
+        """SSID/passphrase/BSSID of the network we just joined. wpa_supplicant
+        does not emit the WPS Credentials signal here, but the network that
+        WPS created carries them."""
+        net = self.get(self.wfd, IFACE, "CurrentNetwork")
+        props = self.get(net, NETWORK, "Properties")
+        unquote = lambda v: v[1:-1] if len(v) >= 2 and v[0] == v[-1] == '"' else v
+        ssid, psk = unquote(str(props.get("ssid", ""))), str(props.get("psk", ""))
+        psk_hex = not psk.startswith('"')
+        bssid = None
+        try:
+            bssid = mac_str(self.get(self.get(self.wfd, IFACE, "CurrentBSS"), BSS, "BSSID"))
+        except GLib.Error:
+            pass
+        if ssid and psk:
+            return {"ssid": ssid, "psk": unquote(psk), "psk_hex": psk_hex, "bssid": bssid}
+        return None
+
     def on_associated(self):
         self.clear_timer()
+        if self.phase == "wps":
+            try:
+                self.new_creds = self.read_joined_network() or self.new_creds
+            except GLib.Error as e:
+                log(f"could not read the pairing to save it: {e.get_message()}")
         self.phase = "dhcp"
         self.status("Joined the TV's network, getting an address…")
         mac = mac_bytes(open(f"/sys/class/net/{self.o['iface']}/address").read().strip())

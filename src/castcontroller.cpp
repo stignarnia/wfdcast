@@ -241,6 +241,7 @@ void CastController::onHelperEvent(const QJsonObject &e)
     } else if (ev == u"credentials"_s) {
         m_settings->put(u"tvSsid"_s, e.value(u"ssid"_s).toString());
         m_settings->put(u"tvPsk"_s, e.value(u"psk"_s).toString());
+        m_settings->put(u"tvPskHex"_s, e.value(u"psk_hex"_s).toBool());
         m_settings->put(u"tvBssid"_s, e.value(u"bssid"_s).toString());
         appendLog(u"Pairing saved: next time no Accept on the TV is needed."_s);
     } else if (ev == u"forget"_s) {
@@ -271,6 +272,7 @@ void CastController::connectTo(const QString &mac)
         cmd.insert(u"creds"_s,
                    QJsonObject{{u"ssid"_s, m_settings->getString(u"tvSsid"_s)},
                                {u"psk"_s, m_settings->getString(u"tvPsk"_s)},
+                               {u"psk_hex"_s, m_settings->getBool(u"tvPskHex"_s)},
                                {u"bssid"_s, m_settings->getString(u"tvBssid"_s)}});
     }
     sendHelper(cmd);
@@ -295,6 +297,7 @@ void CastController::forgetTv()
     for (const QString &k : {u"tvMac"_s, u"tvName"_s, u"tvSsid"_s, u"tvPsk"_s, u"tvBssid"_s}) {
         m_settings->put(k, QString());
     }
+    m_settings->put(u"tvPskHex"_s, false);
 }
 
 void CastController::onPlay(const QString &ip, int port, int w, int h, int fps)

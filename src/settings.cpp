@@ -46,6 +46,7 @@ Settings::Settings(QObject *parent)
         {u"tvName"_s, QString()},
         {u"tvSsid"_s, QString()},
         {u"tvPsk"_s, QString()},
+        {u"tvPskHex"_s, false},
         {u"tvBssid"_s, QString()},
     };
     m_group = KSharedConfig::openConfig(u"wfdcastrc"_s)->group(u"Settings"_s);
