@@ -262,6 +262,7 @@ class Helper:
         self.loop = GLib.MainLoop()
         self.main = self.main_ifname = self.p2p_addr = None
         self.wfd = None
+        self.created_netdev = False
         self.old_wfd_ies = None
         self.fw = None
         self.subs = []
@@ -337,16 +338,11 @@ class Helper:
             raise RuntimeError("no Wi-Fi interface with Wi-Fi Direct support is managed by wpa_supplicant")
         log(f"main Wi-Fi {self.main_ifname}, Wi-Fi Direct address {self.p2p_addr}")
 
-        self.remove_iface(stale=True)
+        self.remove_iface()  # leftovers from a crash
         run(["iw", "dev", self.main_ifname, "interface", "add", iface, "type", "managed"])
-        for _ in range(30):
-            if iface in run(["nmcli", "-t", "-f", "DEVICE", "device"], check=False).split():
-                break
-            time.sleep(0.1)
-        run(["nmcli", "device", "set", iface, "managed", "no"], check=False)
-        self.wfd = self.call(WPAS_PATH, WPAS, "CreateInterface", "(a{sv})",
-                             ({"Ifname": GLib.Variant("s", iface),
-                               "Driver": GLib.Variant("s", "nl80211")},)).unpack()[0]
+        self.created_netdev = True
+        self.release_from_networkmanager(iface)
+        self.wfd = self.create_wpas_iface(iface)
         self.call(self.wfd, IFACE, "VendorElemAdd", "(iay)",
                   (13, p2p_assoc_ie(mac_bytes(self.p2p_addr), self.o["name"])))
         self.old_wfd_ies = bytes(self.get(WPAS_PATH, WPAS, "WFDIEs"))
@@ -373,17 +369,63 @@ class Helper:
         run(["firewall-cmd", "--zone", FW_ZONE, "--add-port", f"{self.o['rtsp_port']}/tcp"])
         self.fw = FW_ZONE
 
-    def remove_iface(self, stale=False):
-        iface = self.o["iface"]
+    def release_from_networkmanager(self, iface):
+        """NetworkManager grabs every new Wi-Fi device and registers it with
+        wpa_supplicant. Mark ours unmanaged and wait until NM has let go."""
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            states = dict(line.split(":", 1) for line in
+                          run(["nmcli", "-t", "-f", "DEVICE,STATE", "device"], check=False).splitlines()
+                          if ":" in line)
+            if iface in states:
+                if states[iface] == "unmanaged":
+                    break
+                run(["nmcli", "device", "set", iface, "managed", "no"], check=False)
+            time.sleep(0.1)
+        else:
+            log(f"NetworkManager did not report {iface} as unmanaged; continuing anyway")
+
+    def wpas_iface_path(self, iface):
         try:
-            path = self.wfd
-            if stale:
-                path = self.call(WPAS_PATH, WPAS, "GetInterface", "(s)", (iface,)).unpack()[0]
-            if path:
-                self.call(path, WPS, "Cancel")
+            return self.call(WPAS_PATH, WPAS, "GetInterface", "(s)", (iface,)).unpack()[0]
         except GLib.Error:
-            path = None if stale else self.wfd
+            return None
+
+    def create_wpas_iface(self, iface):
+        """Register our interface with wpa_supplicant, replacing a registration
+        NetworkManager may have left behind."""
+        for _ in range(10):
+            stale = self.wpas_iface_path(iface)
+            if stale:
+                try:
+                    self.call(WPAS_PATH, WPAS, "RemoveInterface", "(o)", (stale,))
+                except GLib.Error:
+                    pass
+                time.sleep(0.2)
+                continue
+            try:
+                return self.call(WPAS_PATH, WPAS, "CreateInterface", "(a{sv})",
+                                 ({"Ifname": GLib.Variant("s", iface),
+                                   "Driver": GLib.Variant("s", "nl80211")},)).unpack()[0]
+            except GLib.Error as e:
+                if "InterfaceExists" not in str(e):
+                    raise
+                time.sleep(0.2)
+        raise RuntimeError(f"could not take {iface} over from NetworkManager/wpa_supplicant")
+
+    def remove_iface(self):
+        """Remove our interface from wpa_supplicant and the kernel, by name.
+        Only ever touches the interface named in our settings (default wfd0)."""
+        iface = self.o["iface"]
+        if iface == self.main_ifname:
+            return  # never, ever touch the main Wi-Fi
+        path = self.wpas_iface_path(iface)
         if path:
+            for method in ("Cancel",):
+                try:
+                    self.call(path, WPS, method)
+                except GLib.Error:
+                    pass
             try:
                 self.call(WPAS_PATH, WPAS, "RemoveInterface", "(o)", (path,))
             except GLib.Error:
@@ -405,7 +447,7 @@ class Helper:
                 self.call(self.main, P2P, "StopFind")  # only stops discovery
             except GLib.Error:
                 pass
-        if self.wfd:
+        if self.wfd or self.created_netdev:
             self.remove_iface()
         if self.old_wfd_ies is not None:
             try:
