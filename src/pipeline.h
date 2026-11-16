@@ -17,6 +17,7 @@ public:
     struct Config {
         int pipewireFd = -1;
         quint32 node = 0;
+        int sourceWidth = 0, sourceHeight = 0; // size KDE reported for the shared source
         QString audioDevice; // empty = silence
         QString encoder; // auto | x264 | vaapi | nvenc
         int width = 1920, height = 1080, fps = 30;

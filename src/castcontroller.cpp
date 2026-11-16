@@ -165,6 +165,7 @@ void CastController::onPortalReady(int fd, quint32 node, QSize size)
     }
     m_pwFd = fd;
     m_pwNode = node;
+    m_sourceSize = size;
     appendLog(u"Screen source ready: PipeWire node %1, %2×%3"_s.arg(node).arg(size.width()).arg(size.height()));
 
     QString audioWarning;
@@ -361,6 +362,8 @@ void CastController::onPlay(const QString &ip, int port, int w, int h, int fps)
     Pipeline::Config c;
     c.pipewireFd = m_pwFd;
     c.node = m_pwNode;
+    c.sourceWidth = m_sourceSize.width();
+    c.sourceHeight = m_sourceSize.height();
     c.audioDevice = m_audioDevice;
     c.encoder = m_settings->getString(u"encoder"_s);
     c.width = w;

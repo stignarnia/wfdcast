@@ -86,6 +86,9 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   x264 treats it as an average ceiling, ~10–14 Mbit/s at 17 on desktop content).
 - **Audio leftovers**: a killed app left the null sink loaded. The app quits through the event loop on SIGTERM/SIGINT/SIGHUP
   (KSignalHandler) and removes stale `wfdcast` sinks at startup and before each cast.
+- **KWin renders the screencast at whatever size downstream negotiates**: without a caps filter pinning the source
+  size right after `pipewiresrc`, KWin delivered 1600×900 already stretched and `add-borders` had nothing to do
+  (verified on a frame captured from the wire). The pipeline pins the size the portal reported.
 - **The TV stretches every mode to its panel** (its Miracast player's video surface is full-screen and ignores the
   picture's shape): an exact 1440×900 stream filled the 16:9 panel distorted. The app picks the panel shape
   automatically from the biggest HD CEA mode the TV advertises, sends only modes of that shape and letterboxes here

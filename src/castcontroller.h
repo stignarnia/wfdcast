@@ -93,6 +93,7 @@ private:
 
     int m_pwFd = -1;
     quint32 m_pwNode = 0;
+    QSize m_sourceSize;
     QString m_audioDevice;
     QString m_targetMac;
     QString m_targetName;

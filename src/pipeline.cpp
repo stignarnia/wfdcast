@@ -82,12 +82,19 @@ bool Pipeline::start(const Config &c, QString *error)
     // frame interval so the TV gets a steady stream; with gaps its player stalls
     // and catches up instead of running at a constant small delay.
     const int frameMs = qMax(1, 1000 / qMax(1, c.fps));
-    QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%4 ! "
+    // Pin the capture to the source's real size: KWin renders the stream at
+    // whatever size downstream asks for, so without this it delivers the TV
+    // mode's size already stretched and add-borders has nothing to letterbox.
+    const QString sourceCaps = c.sourceWidth > 0 && c.sourceHeight > 0
+        ? u"video/x-raw,width=%1,height=%2 ! "_s.arg(c.sourceWidth).arg(c.sourceHeight)
+        : QString();
+    QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%4 ! %5"
                     "queue max-size-buffers=2 leaky=downstream ! videorate ! video/x-raw,framerate=%3/1 ! "_s
                         .arg(::dup(c.pipewireFd))
                         .arg(c.node)
                         .arg(c.fps)
-                        .arg(frameMs);
+                        .arg(frameMs)
+                        .arg(sourceCaps);
     if (m_encoderName == u"vaapi"_s) {
         video += u"vapostproc add-borders=true ! video/x-raw(memory:VAMemory),format=NV12,%1,pixel-aspect-ratio=1/1 ! "
                  "vah264enc name=enc bitrate=%2 rate-control=cbr key-int-max=%3 b-frames=0 target-usage=%4 ! %5 ! "_s
