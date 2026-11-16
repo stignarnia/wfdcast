@@ -1,0 +1,14 @@
+# CMake build trees
+build/
+build-*/
+
+# clangd / editor tooling
+.cache/
+compile_commands.json
+.vscode/
+.idea/
+*.user
+
+# Python bytecode (helper)
+__pycache__/
+*.pyc

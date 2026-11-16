@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-FileCopyrightText: 2026 stignarnia
+     SPDX-License-Identifier: MIT -->
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>WFD Cast</vendor>
+  <action id="io.github.stignarnia.wfdcast.helper">
+    <description>Set up the Wi-Fi Direct link to a TV</description>
+    <message>Authentication is required to connect to the TV for screen casting</message>
+    <icon_name>video-display</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">@WFDCAST_HELPER_PATH@</annotate>
+  </action>
+</policyconfig>

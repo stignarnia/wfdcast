@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=WFD Cast
+GenericName=Screen Casting
+Comment=Cast your screen and sound to a Wi-Fi Display (Miracast) TV
+Exec=wfdcast
+Icon=video-display
+Terminal=false
+Categories=Qt;KDE;AudioVideo;Video;Utility;
+Keywords=miracast;wifi display;cast;mirror;tv;screen;
+StartupNotify=true

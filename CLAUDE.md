@@ -1,0 +1,189 @@
+# WFD Cast: notes for contributors and coding agents
+
+## Project rules
+
+- License **MIT**. Every source file starts with
+  `SPDX-FileCopyrightText: 2026 stignarnia` + `SPDX-License-Identifier: MIT`.
+- This file is tracked in git. **Never put personal data in it or in the code**: no names, hostnames,
+  Wi-Fi network names, MAC/IP addresses of real devices, e-mails or home paths. Use placeholders like
+  `<tv-p2p-addr>` and `<tv-lan-ip>`.
+- **No hardcoded tunables.** Anything a user might want to change is a key in `Settings`
+  (`src/settings.cpp` defaults) and is editable in `src/qml/Main.qml`. Code reads values from `Settings`.
+- The helper must **never act on the main Wi-Fi**. Only call `Disconnect`, `Reassociate`, WPS or network
+  methods on the helper's own wpa_supplicant interface object, after checking its `Ifname`.
+  `P2PDevice.Disconnect` on the main interface's object deauthenticates the home Wi-Fi
+  (`reason=3 locally_generated=1`). It happened once during development.
+- Build: `cmake -S . -B build -G Ninja && cmake --build build`, run `./build/bin/wfdcast`. To test a
+  modified helper without installing it, use `WFDCAST_HELPER=$PWD/helper/wfdcast-helper.py ./build/bin/wfdcast`
+  (pkexec then uses its generic admin action), but the firewalld zone from `install.sh` must exist.
+- Install with `sudo ./install.sh`:
+  - It copies the source to `/usr/local/src/wfdcast`, installs `packaging/rebuild` and the pacman hook
+    `packaging/90-wfdcast.hook`, which rebuilds after `qt6-base`, `qt6-declarative`, `kirigami`, `ki18n`,
+    `kconfig`, `kcoreaddons` or `gstreamer` updates.
+  - Then it builds, and installs to `/usr/local`, the polkit policy in `/usr/share/polkit-1/actions`, and
+    the firewalld zone `/etc/firewalld/zones/wfdcast.xml`.
+  - `sudo ./uninstall.sh [--purge]` removes all of it.
+
+## Architecture
+
+```
+Main.qml ── cast (CastController) ── settings (Settings, ~/.config/wfdcastrc, mode 600: holds the TV passphrase)
+                │
+                ├─ Portal       xdg-desktop-portal ScreenCast → KDE picker (screen | window | virtual) → PipeWire fd + node
+                ├─ AudioRouter  pactl: "tv" = null sink "wfdcast" made default (monitor recorded) | "mirror" = default sink monitor | "none"
+                ├─ WfdServer    RTSP source side on TCP <rtspPort>: M1 OPTIONS, M3 GET_PARAMETER, M4 SET_PARAMETER, M5 trigger SETUP,
+                │               answers M2/M6/M7, M16 keep-alive. Never asks for wfd_content_protection (no HDCP).
+                ├─ Pipeline     GStreamer in-process: pipewiresrc → (vapostproc+vah264enc | cudaupload+cudaconvertscale+nvh264enc | x264enc)
+                │               CBP H.264 + pulsesrc/silence → fdkaacenc|avenc_aac → mpegtsmux alignment=7 → rtpmp2tpay → udpsink
+                └─ QProcess "pkexec /usr/local/lib/wfdcast/wfdcast-helper.py"  (JSON lines: commands on stdin, events on stdout)
+                        helper (root, Python + Gio): creates <iface> (default wfd0) next to the main Wi-Fi, NM-unmanaged,
+                        adds it to wpa_supplicant, adds the P2P IE to its association requests (VendorElemAdd frame 13),
+                        sets global WFD IEs (source, RTSP port), puts it in firewalld zone "wfdcast" + opens the RTSP port at runtime,
+                        joins the TV (saved passphrase, or P2P join request → TV Accept → legacy WPS-PBC on <iface>),
+                        own minimal DHCP client (UDP, broadcast flag), renews the lease, undoes everything on exit/EOF.
+```
+
+Helper commands: `start {iface,name,rtsp_port,throughput,*_timeout}`, `scan`, `connect {mac,creds?}`, `reassociate`, `quit`.
+Helper events: `ready`, `peer {mac,name,sink,wfd}`, `status`, `accept`, `credentials {ssid,psk,bssid}`, `forget`,
+`connected {ip,prefix,tv_ip}`, `disconnected`, `error`, `log`, `bye`.
+
+Flow: Cast → picker → audio setup → RTSP listen (0.0.0.0, the firewall limits it to the helper's interface) →
+pkexec helper → remembered TV: `connect` with saved creds (no Accept), else `scan` and the user picks → join → DHCP →
+the TV opens RTSP to us (if it doesn't within `tvWaitSeconds`, the helper reassociates; max 3 nudges) → PLAY → pipeline.
+If the TV ends a session it usually reconnects by itself; the controller keeps waiting.
+
+Video modes offered in M4 (CEA bitmap bit / H.264 level code, capped to the TV's max level):
+1080p60 bit 8 / 0x10, 1080p30 bit 7 / 0x08, 720p60 bit 6 / 0x02, 720p30 bit 5 / 0x01, 480p60 bit 0 (fallback).
+The encoder speed/quality slider (1..7) maps to x264 `speed-preset` ultrafast..slow, VA-API `target-usage` 7..1,
+NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the encoder).
+
+## Why the design looks like this: reference TV (Sony BRAVIA DE1, Android TV 14, firmware UKN7.260716.030, MediaTek mt9690)
+
+### TV bugs
+
+1. **Wi-Fi driver drops the Wi-Fi Direct tag after Accept.** When the user presses Accept (`WPS-PBC-ACTIVE`), the driver
+   logs `p2pRoleFsmRunEventBeaconUpdate: (P2P ERROR) Update extra IEs for asso resp fail!` (preceded by
+   `p2pFuncParseBeaconContent: (RSN ERROR) bcn mfpc:0 …`), and from then on the TV's group is broadcast without its P2P IE.
+   Spec-following clients can't join. Windows tolerates it. The driver error fires on every beacon update and is harmless
+   for Windows. Not proven: the message says "asso resp" while the missing tag was seen in beacons/probe responses.
+2. **Miracast HDCP is advertised but always fails.** The TV offers `wfd_content_protection: HDCP2.1 port=4990`, then its
+   own HDCP trusted app in the TEE fails: `TEEC_InvokeCommand failed, FFFF0000` (`ori=4`) → `HCS_ComputeH failed` →
+   `HDCP fail in state: 30.6`. It costs **~46 s per connection** (the sender waits ~38 s, the TV waits 8 s in
+   `waitForHDCPFinish`), and the stream ends up unencrypted anyway. Seen on every connection. Software `hdcp2x` DRM
+   plugin, "HDCP Rx Key is read before", key format 2.2. HDMI-input HDCP is separate hardware (untested). Netflix working
+   proves nothing (Widevine, no HDCP link). WFD Cast avoids it by never asking for content protection.
+3. **Wi-Fi Direct negotiation is broken.** As autonomous GO the TV answers GO Negotiation with `Status: 1` ("information
+   currently unavailable") and never follows up with its own request. Its negotiation mode (`Settings.Global
+   enable_p2p_nego=1`) stops the autonomous GO but makes the TV **undiscoverable**. The property
+   `vendor.mtk.wifi.DisableAutoGo` effectively does nothing (it only resets the state flag `bCreatego`).
+4. **No Microsoft WFD extensions.** It ignores `microsoft_rtcp_capability`, `microsoft_max_bitrate`,
+   `microsoft_format_change_capability` etc., so Windows gets no RTCP feedback for bitrate adaptation.
+
+### TV facts
+
+- Receiver app `com.mediatek.miracast` (`/system_ext/app/WFDSinkTest/WFDSinkTest.apk`), opened via Input → Screen mirroring.
+  On open it **immediately creates its own persistent group as GO**:
+  `P2P-GROUP-STARTED p2p0 GO ssid="DIRECT-xx-<tv name>" freq=5180 … [PERSISTENT]`. GO IP 192.168.49.1, DHCP 192.168.49.x.
+- The Accept prompt (`com.android.wifi.dialog`) reliably appears only after the receiver app was (re)started.
+  Over ADB: `am force-stop com.mediatek.miracast` + `monkey -p com.mediatek.miracast -c android.intent.category.LEANBACK_LAUNCHER 1`.
+  By hand: leave Screen mirroring and reopen it.
+- The TV stores a single persistent group for all senders (`numPersistentGroup=1`). Its passphrase survived receiver
+  restarts (Windows reconnected without WPS). After a full TV reboot it's unverified.
+- The receiver only starts RTSP for a group client with `status == 0` (a connected Wi-Fi Direct device): see
+  `MiracastService.updateMacAddress` (decompiled with dexdump). A regular client gets `status: 4`, `mWfdDeviceMac is null`.
+  The P2P IE in the association request (Capability attr + Device Info with our P2P device address) makes the TV log
+  `AP-STA-CONNECTED <iface addr> p2p_dev_addr=<pc-p2p-addr>` and accept us.
+- After association the TV tries RTSP to `<our ip>:<port>` for ~10 s, then stops. Reassociating the helper's interface
+  makes it try again.
+- M3 answer: `wfd_audio_codecs: LPCM 00000003 00, AAC 00000001 00`,
+  `wfd_video_formats: 00 01 01 08 0001ffff 0f3fffff 00000fff 00 0040 0003 13 0500 02D0` (CBP, max level 4.1, all CEA up to
+  1080p60), `wfd_client_rtp_ports: RTP/AVP/UDP;unicast 19900 0 mode=play`. Asked for R2/vendor extras it also returns
+  `wfd2_video_formats: 00 01 FF 00FF 00000001FFFF 00000F3FFFFF 000000000FFF 00 0000 0000 11 00`,
+  `wfd2_audio_codecs: LPCM 00000003 00, AAC 00000001 00`, connector 07, `wfd_uibc_capability`.
+- Chromecast receiver at `<tv-lan-ip>:8009`. Its DIAL server is MediaTek's generic one (`modelName: Mediatek_MTXXXX`) and
+  answers 404 for YouTube, Netflix and ~80 other app names, so Chromium greys out the "available for specific video sites" entry.
+
+### Why the stock Linux senders fail on this TV
+
+- **NetworkManager:** only does GO Negotiation (Wi-Fi P2P connection type), never "join an existing group". This TV always
+  hosts and won't negotiate (bug 3), so NM fails after 45 s (`supplicant-timeout`).
+- **wpa_supplicant P2P join** (`P2PDevice.Connect` with `join: true`): it refuses to update the GO's scan entry without the
+  P2P IE (`BSS: No P2P IE - skipping BSS <tv-p2p-addr> update for P2P interface`). Before Accept, WPS isn't active; after
+  Accept, the tag is gone (bug 1). Failure after 60 s: `P2P-GROUP-FORMATION-FAILURE`. Windows instead associates for WPS
+  117 ms after Accept, using the BSSID it already knows.
+- **GNOME Network Displays:** uses NM, so it hits the negotiation failure. Its Miracast mode also dies at its own firewalld
+  check: it needs zone `P2P-WiFi-Display`, and reading the permanent config needs polkit
+  `org.fedoraproject.FirewallD1.config` (Arch ships the server policy; firewalld always passes `AllowUserInteraction`),
+  so a password prompt appears and GND gives up after 0.5 s. Its "Chromecast" mode is not mirroring: it uses the
+  Default Media Receiver (`CC1AD845`, LOAD of a live Matroska URL) and shows a buffered player that crashes on retry.
+- **FluxCast:** negotiation only (`nm.py` AddAndActivateConnection2 `wifi-p2p`; `wpas.py` `Connect` with `go_intent`).
+- **MiracleCast:** its own wpa_supplicant, `P2P_CONNECT <mac> pbc` without `join`/`auto`. Its sender side is "not implemented yet".
+- **WDS (Intel):** ConnMan-based, unmaintained; whether ConnMan joins is unverified.
+
+### Windows (built-in Win+K) on the same TV: works, but slowly
+
+- First pairing: `P2P-PROV-DISC-PBC-REQ` → Accept → `WPS-PBC-ACTIVE` + the driver error → still `WPS-SUCCESS` →
+  `AP-STA-CONNECTED … p2p_dev_addr=…` within 0.6 s. Reconnects reuse the saved persistent-group passphrase (no Accept, no WPS).
+- Timeline: ~4 s pairing, RTSP M1–M3 in 0.3 s, then ~38 s waiting on the failing HDCP, 8 s `waitForHDCPFinish`, then video.
+  Up to ~2 min from Win+K, because Windows also spends time searching before the TV hears anything.
+- Windows' M4 switches between 1024×768p60 (VESA bit 3) and 1920×1080p60 (CEA bit 8) right after connecting.
+  Quality was poor in one session and fine after a reconnect: no RTCP feedback (bug 4). Windows has no sender-bitrate setting.
+- The test laptop's MT7925 Windows driver reports Wireless Display supported. `netsh` WLAN trace scenarios don't exist on that build.
+- To forget the TV on Windows: Settings → Bluetooth & devices → the TV → Remove device. The TV can't forget one sender
+  (single persistent group, no root) short of a network reset.
+
+### Other casting findings
+
+- **Chromecast from Linux:** a Chromium-based browser's Cast → Cast screen is real Cast Streaming (low latency). It finds
+  the TV via **SSDP**: the TV answers from **UDP source port 1900** (and random ports) to the browser's temporary port. firewalld
+  treats those unicast replies to a multicast search as new traffic and drops them. The firewalld service `upnp-client`
+  (source-port 1900/udp) fixes it.
+- **Miracast vs Chromecast latency:** the Miracast route (this app) felt much better than Chromecast in practice.
+
+## Manual procedure (for debugging the helper), placeholders in `<>`
+
+```bash
+sudo iw dev <main-iface> interface add wfd0 type managed
+sudo nmcli device set wfd0 managed no
+sudo busctl call fi.w1.wpa_supplicant1 /fi/w1/wpa_supplicant1 fi.w1.wpa_supplicant1 CreateInterface a{sv} 2 Ifname s wfd0 Driver s nl80211
+# → F = returned object path (verify Ifname "wfd0"); W = main interface's object (has P2PDevice)
+sudo busctl set-property fi.w1.wpa_supplicant1 /fi/w1/wpa_supplicant1 fi.w1.wpa_supplicant1 WFDIEs ay 9 0 0 6 0 144 28 68 0 200
+#   WFD subelement 0: device info 0x0090 (source, session available), RTSP port 0x1c44 = 7236, throughput 200
+# P2P IE for association requests (frame 13): dd <len> 50 6f 9a 09 | 02 02 00 25 00 (Capability) |
+#   0d <len16 LE> <pc-p2p-addr 6 bytes> 11 08 00 01 00 50 f2 04 00 01 00 10 11 <len16 BE> <device name>
+sudo busctl call fi.w1.wpa_supplicant1 $F fi.w1.wpa_supplicant1.Interface VendorElemAdd iay 13 <n> <bytes…>
+# per connection (TV receiver freshly (re)opened):
+sudo busctl call fi.w1.wpa_supplicant1 $W fi.w1.wpa_supplicant1.Interface.P2PDevice Find a{sv} 1 Timeout i 30
+#   wait for a FRESH P2P-DEVICE-FOUND <tv-p2p-addr> (a stale peer object → "Did not receive correct message arguments")
+sudo busctl call fi.w1.wpa_supplicant1 $W fi.w1.wpa_supplicant1.Interface.P2PDevice Connect a{sv} 3 peer o $W/Peers/<tvaddr-no-colons> wps_method s pbc join b true
+#   wait for "Received Provision Discovery Response" (D-Bus: ProvisionDiscoveryPBCResponse); the TV shows Accept.
+#   Start WPS only now: earlier, wfd0's scans block the join ("Failed to start scan for join").
+sudo busctl call fi.w1.wpa_supplicant1 $F fi.w1.wpa_supplicant1.Interface.WPS Start a{sv} 3 Role s enrollee Type s pbc Bssid ay 6 <tv-p2p-addr bytes>
+#   → wfd0 "completed" ~10 s after Accept; DHCP; the TV connects to <wfd0 ip>:7236.
+```
+
+Shell gotchas: zsh doesn't word-split `$VAR`. `pkill -f <pattern>` can kill its own shell; use `ps -eo pid,args | grep '[p]attern'`.
+
+The first working sender was a Python prototype (RTSP + `gst-launch-1.0`, KDE virtual monitor via the portal with
+SourceType 4, 1920×1080). `src/wfdserver.cpp` and `src/pipeline.cpp` are its 1:1 port. The prototype's working RTSP exchange:
+`OPTIONS → 200 (Public: org.wfa.wfd1.0, GET_PARAMETER, SET_PARAMETER)` · sink `OPTIONS` → 200 · `GET_PARAMETER` (M3) →
+caps · `SET_PARAMETER` (M4 `00 00 01 08 00000080 …`, AAC, presentation URL, client port) → 200 · `wfd_trigger_method: SETUP`
+→ 200 · sink `SETUP …streamid=0 client_port=19900` → 200 (`server_port=5000`) · sink `PLAY` → 200 → stream →
+TV logs `Miracast_MediaCodecBridge_Java: onOutputBufferAvailable queue video…`.
+
+## Reference machine state (owner's setup, kept on purpose)
+
+- firewalld zones `home` and `work` have the service `upnp-client` (needed for browser Cast discovery). Undo:
+  `firewall-cmd --permanent --zone=<zone> --remove-service=upnp-client && firewall-cmd --reload`.
+- GNOME Network Displays was removed. TV ADB is off (re-enable in Developer options for TV logs; laptop keys may still be
+  authorized, revoke via "Revoke USB debugging authorizations").
+- On the TV, keep **My BRAVIA (`com.sony.dtv.promos`) enabled**: Sony Pictures Core needs it to detect the TV's included
+  offer (credits appeared only after enabling it and restarting Core).
+- All other debugging changes (temporary polkit rules, zone `P2P-WiFi-Display`, rich rules, `enable_p2p_nego`, virtual
+  interfaces, debug log levels, systemd-networkd) were undone and verified.
+
+## Open items
+
+- Real-TV test of the app end to end (first pairing, saved-pairing reconnect, all three encoders, audio modes, live bitrate).
+- 1080p60 sends level 4.1 in M4 when the TV caps at 4.1, while the encoder may emit 4.2. Check that the TV accepts it.
+- Optional: LPCM audio for sinks without AAC. Optional: UIBC (TV remote → mouse/keyboard).

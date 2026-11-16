@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 stignarnia
+# SPDX-License-Identifier: MIT
+#
+# Builds WFD Cast from the installed source copy and installs it under
+# /usr/local. Runs as root: from install.sh, from the pacman hook after Qt, KDE
+# Frameworks or GStreamer updates, or by hand.
+
+set -uo pipefail
+
+readonly SRC_DIR=/usr/local/src/wfdcast
+readonly PREFIX=/usr/local
+readonly STATE_DIR=/var/lib/wfdcast
+readonly WORK_DIR=/var/cache/wfdcast
+readonly BUILD_LOG=$WORK_DIR/build.log
+readonly FAILED_MARKER=$STATE_DIR/build-failed
+
+log() {
+    echo "wfdcast: $*"
+    logger -t wfdcast -- "$*" 2>/dev/null || true
+}
+
+fail() {
+    log "build failed: $*"
+    mkdir -p "$STATE_DIR"
+    printf 'date=%s\nreason=%s\nlog=%s\n' "$(date -Is)" "$*" "$BUILD_LOG" >"$FAILED_MARKER"
+    exit 1
+}
+
+if [[ $EUID -ne 0 ]]; then
+    echo "wfdcast: rebuild must run as root (sudo $0)" >&2
+    exit 1
+fi
+
+exec 9>/run/wfdcast-rebuild.lock
+flock 9
+
+[[ -f $SRC_DIR/CMakeLists.txt ]] || fail "source not found in $SRC_DIR, run install.sh again"
+
+rm -rf -- "$WORK_DIR"
+mkdir -p "$WORK_DIR"
+
+log "building"
+cmake -S "$SRC_DIR" -B "$WORK_DIR/build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+    >"$BUILD_LOG" 2>&1 || fail "configure step failed, see $BUILD_LOG"
+cmake --build "$WORK_DIR/build" -j"$(nproc)" >>"$BUILD_LOG" 2>&1 || fail "compile step failed, see $BUILD_LOG"
+DESTDIR="$WORK_DIR/stage" cmake --install "$WORK_DIR/build" >>"$BUILD_LOG" 2>&1 || fail "install step failed, see $BUILD_LOG"
+
+# Copy every staged file into place. Each file is written next to its target
+# and renamed over it, so a running wfdcast keeps its old binary mapped.
+while IFS= read -r -d '' staged; do
+    target=${staged#"$WORK_DIR/stage"}
+    target_dir=$(dirname -- "$target")
+    name=$(basename -- "$target")
+    install -d -m 0755 "$target_dir"
+    mode=0644
+    [[ -x $staged ]] && mode=0755
+    install -m "$mode" "$staged" "$target_dir/.$name.new" || fail "could not write to $target_dir"
+    mv -f -- "$target_dir/.$name.new" "$target" || fail "could not replace $target"
+done < <(find "$WORK_DIR/stage" -type f -print0)
+
+mkdir -p "$STATE_DIR"
+rm -f -- "$FAILED_MARKER"
+rm -rf -- "$WORK_DIR/build" "$WORK_DIR/stage"
+log "built and installed under $PREFIX"

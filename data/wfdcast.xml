@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-FileCopyrightText: 2026 stignarnia
+     SPDX-License-Identifier: MIT -->
+<!-- firewalld zone for the WFD Cast link to the TV. The helper puts its virtual
+     Wi-Fi interface here at runtime and opens the RTSP port (default 7236/tcp)
+     only while casting. Only DHCP replies are allowed permanently. -->
+<zone target="default">
+  <short>WFD Cast</short>
+  <description>Wi-Fi Direct link to a TV used by WFD Cast. Allows DHCP replies; the Miracast control port is opened at runtime while casting.</description>
+  <port protocol="udp" port="68"/>
+</zone>

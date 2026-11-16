@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2026 stignarnia
+# SPDX-License-Identifier: MIT
+#
+# WFD Cast links against Qt, KDE Frameworks and GStreamer: rebuild it after any
+# of them is updated, so it never runs against libraries it was not built for.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = qt6-base
+Target = qt6-declarative
+Target = kirigami
+Target = ki18n
+Target = kconfig
+Target = kcoreaddons
+Target = gstreamer
+
+[Action]
+Description = Rebuilding WFD Cast for the updated libraries...
+When = PostTransaction
+Exec = /usr/local/lib/wfdcast/rebuild
