@@ -5,21 +5,56 @@
 #include <QRandomGenerator>
 #include <QRegularExpression>
 
+#include <tuple>
+
 using namespace Qt::StringLiterals;
 
 namespace
 {
-// CEA modes we offer: bit in wfd_video_formats' CEA bitmap, H.264 level code.
-struct CeaMode {
-    int width, height, fps, bit, level;
+// Wi-Fi Display video modes (WFD spec tables): which bitmap, which bit.
+// Interlaced CEA modes are left out.
+struct Mode {
+    int width, height, fps;
+    bool vesa; // false = CEA bitmap, true = VESA bitmap
+    int bit;
 };
-constexpr CeaMode kModes[] = {
-    {1920, 1080, 60, 8, 0x10}, // level 4.2
-    {1920, 1080, 30, 7, 0x08}, // level 4.1
-    {1280, 720, 60, 6, 0x02}, // level 3.2
-    {1280, 720, 30, 5, 0x01}, // level 3.1
-    {640, 480, 60, 0, 0x01}, // mandatory fallback
+constexpr Mode kModes[] = {
+    // CEA
+    {640, 480, 60, false, 0},    {720, 480, 60, false, 1},    {720, 576, 50, false, 3},
+    {1280, 720, 30, false, 5},   {1280, 720, 60, false, 6},   {1920, 1080, 30, false, 7},
+    {1920, 1080, 60, false, 8},  {1280, 720, 25, false, 10},  {1280, 720, 50, false, 11},
+    {1920, 1080, 25, false, 12}, {1920, 1080, 50, false, 13}, {1280, 720, 24, false, 15},
+    {1920, 1080, 24, false, 16},
+    // VESA
+    {800, 600, 30, true, 0},     {800, 600, 60, true, 1},     {1024, 768, 30, true, 2},
+    {1024, 768, 60, true, 3},    {1152, 864, 30, true, 4},    {1152, 864, 60, true, 5},
+    {1280, 768, 30, true, 6},    {1280, 768, 60, true, 7},    {1280, 800, 30, true, 8},
+    {1280, 800, 60, true, 9},    {1360, 768, 30, true, 10},   {1360, 768, 60, true, 11},
+    {1366, 768, 30, true, 12},   {1366, 768, 60, true, 13},   {1280, 1024, 30, true, 14},
+    {1280, 1024, 60, true, 15},  {1400, 1050, 30, true, 16},  {1400, 1050, 60, true, 17},
+    {1440, 900, 30, true, 18},   {1440, 900, 60, true, 19},   {1600, 900, 30, true, 20},
+    {1600, 900, 60, true, 21},   {1600, 1200, 30, true, 22},  {1600, 1200, 60, true, 23},
+    {1680, 1024, 30, true, 24},  {1680, 1024, 60, true, 25},  {1680, 1050, 30, true, 26},
+    {1680, 1050, 60, true, 27},  {1920, 1200, 30, true, 28},  {1920, 1200, 60, true, 29},
 };
+
+// Lowest H.264 level (WFD level code) that fits the mode; 4.0 is promoted to
+// 4.1 for its higher bitrate limit.
+int levelFor(const Mode &m)
+{
+    const long mbs = long((m.width + 15) / 16) * ((m.height + 15) / 16);
+    const long mbps = mbs * m.fps;
+    if (mbs <= 3600 && mbps <= 108000) {
+        return 0x01; // 3.1
+    }
+    if (mbs <= 5120 && mbps <= 216000) {
+        return 0x02; // 3.2
+    }
+    if (mbs <= 8192 && mbps <= 245760) {
+        return 0x08; // 4.1
+    }
+    return 0x10; // 4.2
+}
 
 const QString kUri = u"rtsp://localhost/wfd1.0"_s;
 
@@ -178,43 +213,56 @@ bool WfdServer::chooseFormat(const QString &sinkFormats)
 {
     // "native preferred profile level CEA VESA HH latency min-slice slice-enc frame-skip max-h max-v"
     const QStringList f = sinkFormats.split(u' ', Qt::SkipEmptyParts);
-    bool okCea = false, okLevel = false;
+    bool okCea = false, okVesa = false, okLevel = false;
     const quint32 cea = f.value(4).toUInt(&okCea, 16);
+    const quint32 vesa = f.value(5).toUInt(&okVesa, 16);
     const int sinkLevel = f.value(3).toInt(&okLevel, 16);
-    const CeaMode *chosen = nullptr;
-    for (const CeaMode &mode : kModes) {
-        if (mode.width == m_wanted.width && mode.height == m_wanted.height && mode.fps == m_wanted.fps
-            && (!okCea || (cea & (1u << mode.bit)))) {
-            chosen = &mode;
+    auto supported = [&](const Mode &m) {
+        if (m.vesa) {
+            return okVesa && (vesa & (1u << m.bit));
+        }
+        return okCea ? bool(cea & (1u << m.bit)) : m.bit == 0; // 640x480 is mandatory
+    };
+
+    // Match the source KDE gives us: exact size if the TV has it, else the
+    // smallest mode it fits in, else the biggest mode. Prefer the wanted
+    // frame rate, then the closest one.
+    const int sw = m_wanted.sourceWidth > 0 ? m_wanted.sourceWidth : 1920;
+    const int sh = m_wanted.sourceHeight > 0 ? m_wanted.sourceHeight : 1080;
+    const Mode *best = nullptr;
+    auto rank = [&](const Mode &m) {
+        const bool exact = m.width == sw && m.height == sh;
+        const bool fits = m.width >= sw && m.height >= sh;
+        const long area = long(m.width) * m.height;
+        // lower is better
+        return std::make_tuple(exact ? 0 : fits ? 1 : 2,
+                               qAbs(m.fps - m_wanted.fps),
+                               fits ? area : -area,
+                               -m.fps);
+    };
+    for (const Mode &m : kModes) {
+        if (supported(m) && (!best || rank(m) < rank(*best))) {
+            best = &m;
         }
     }
-    if (!chosen) { // wanted mode not supported: best supported one
-        for (const CeaMode &mode : kModes) {
-            if (!okCea || (cea & (1u << mode.bit))) {
-                chosen = &mode;
-                break;
-            }
-        }
-        if (chosen) {
-            Q_EMIT log(u"RTSP: the TV does not support %1×%2 at %3 fps, using %4×%5 at %6 fps"_s.arg(m_wanted.width)
-                           .arg(m_wanted.height)
-                           .arg(m_wanted.fps)
-                           .arg(chosen->width)
-                           .arg(chosen->height)
-                           .arg(chosen->fps));
-        }
-    }
-    if (!chosen) {
+    if (!best) {
         endSession(u"The TV advertised no video mode we can send."_s);
         return false;
     }
-    const int level = okLevel && sinkLevel > 0 ? qMin(chosen->level, sinkLevel) : chosen->level;
-    m_width = chosen->width;
-    m_height = chosen->height;
-    m_fps = chosen->fps;
-    m_videoFormats = u"00 00 01 %1 %2 00000000 00000000 00 0000 0000 00 none none"_s
+    const int level = okLevel && sinkLevel > 0 ? qMin(levelFor(*best), sinkLevel) : levelFor(*best);
+    m_width = best->width;
+    m_height = best->height;
+    m_fps = best->fps;
+    m_videoFormats = u"00 00 01 %1 %2 %3 00000000 00 0000 0000 00 none none"_s
                          .arg(level, 2, 16, u'0')
-                         .arg(1u << chosen->bit, 8, 16, u'0');
+                         .arg(best->vesa ? 0u : (1u << best->bit), 8, 16, u'0')
+                         .arg(best->vesa ? (1u << best->bit) : 0u, 8, 16, u'0');
+    Q_EMIT log(u"RTSP: source %1×%2 → TV mode %3×%4 at %5 fps (%6)"_s.arg(sw)
+                   .arg(sh)
+                   .arg(m_width)
+                   .arg(m_height)
+                   .arg(m_fps)
+                   .arg(best->width == sw && best->height == sh ? u"exact"_s : u"scaled with borders"_s));
     return true;
 }
 

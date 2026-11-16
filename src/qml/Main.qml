@@ -116,18 +116,8 @@ Kirigami.ApplicationWindow {
                     Kirigami.FormData.isSection: true
                     Kirigami.FormData.label: i18n("Picture")
                 }
-                Controls.ComboBox {
-                    Kirigami.FormData.label: i18n("Resolution:")
-                    enabled: !root.sessionLocked
-                    model: ["1280 × 720", "1920 × 1080"]
-                    currentIndex: settings.height >= 1080 ? 1 : 0
-                    onActivated: index => {
-                        settings.width = index ? 1920 : 1280
-                        settings.height = index ? 1080 : 720
-                    }
-                }
                 SettingCombo {
-                    Kirigami.FormData.label: i18n("Frame rate:")
+                    Kirigami.FormData.label: i18n("Preferred frame rate:")
                     enabled: !root.sessionLocked
                     key: "fps"
                     options: [{text: i18n("30 fps"), value: 30}, {text: i18n("60 fps"), value: 60}]

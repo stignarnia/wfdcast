@@ -141,8 +141,8 @@ void CastController::onPortalReady(int fd, quint32 node, QSize size)
     }
 
     WfdServer::Wanted wanted;
-    wanted.width = m_settings->getInt(u"width"_s);
-    wanted.height = m_settings->getInt(u"height"_s);
+    wanted.sourceWidth = size.width();
+    wanted.sourceHeight = size.height();
     wanted.fps = m_settings->getInt(u"fps"_s);
     wanted.keepaliveSeconds = m_settings->getInt(u"keepaliveSeconds"_s);
     wanted.localRtpPort = m_settings->getInt(u"rtpPort"_s);

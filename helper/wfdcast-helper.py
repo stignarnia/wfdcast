@@ -31,6 +31,13 @@ import gi
 gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib  # noqa: E402
 
+try:
+    gi.require_version("GLibUnix", "2.0")
+    from gi.repository import GLibUnix  # noqa: E402
+    signal_add = GLibUnix.signal_add
+except (ImportError, ValueError):
+    signal_add = GLib.unix_signal_add
+
 WPAS = "fi.w1.wpa_supplicant1"
 WPAS_PATH = "/fi/w1/wpa_supplicant1"
 IFACE = WPAS + ".Interface"
@@ -348,6 +355,7 @@ class Helper:
         self.firewall_add()
 
         self.subscribe(P2P, "DeviceFoundProperties", self.main, self.on_device_found)
+        self.subscribe(P2P, "FindStopped", self.main, self.on_find_stopped)
         self.subscribe(P2P, "ProvisionDiscoveryPBCResponse", self.main, self.on_pd_response)
         self.subscribe(P2P, "ProvisionDiscoveryFailure", self.main, self.on_pd_failure)
         self.subscribe(WPS, "Credentials", self.wfd, self.on_credentials)
@@ -410,11 +418,20 @@ class Helper:
         emit("bye")
 
     # ---- discovery -------------------------------------------------------
-    def scan(self):
+    def find(self):
         self.call(self.main, P2P, "Find", "(a{sv})",
                   ({"Timeout": GLib.Variant("i", int(self.o["find_timeout"]))},))
+
+    def scan(self):
+        """Look for TVs until one is chosen (Find is restarted when it times out)."""
+        self.phase = "scan"
+        self.find()
         for path in self.get(self.main, P2P, "Peers"):
             self.report_peer(path)
+
+    def on_find_stopped(self):
+        if self.phase in ("scan", "find"):
+            self.find()
 
     def report_peer(self, path):
         try:
@@ -464,8 +481,7 @@ class Helper:
         self.status("Looking for the TV… Open Screen mirroring on the TV "
                     "(close and reopen it if it was already open).")
         self.call(self.wfd, IFACE, "RemoveAllNetworks")
-        self.call(self.main, P2P, "Find", "(a{sv})",
-                  ({"Timeout": GLib.Variant("i", int(self.o["find_timeout"]))},))
+        self.find()
         self.set_timer(int(self.o["find_timeout"]), lambda: self.fail(
             "TV not found. Is Screen mirroring open on the TV?"))
 
@@ -623,7 +639,7 @@ class Helper:
         GLib.io_add_watch(GLib.IOChannel.unix_new(sys.stdin.fileno()),
                           GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.on_stdin)
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-            GLib.unix_signal_add(GLib.PRIORITY_HIGH, sig, lambda *_: (self.quit(), False)[1])
+            signal_add(GLib.PRIORITY_HIGH, sig, lambda *_: (self.quit(), False)[1])
         try:
             self.loop.run()
         finally:

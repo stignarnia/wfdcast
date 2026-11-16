@@ -18,7 +18,8 @@ class WfdServer : public QObject
     Q_OBJECT
 public:
     struct Wanted {
-        int width = 1920, height = 1080, fps = 30;
+        int sourceWidth = 0, sourceHeight = 0; // what KDE's picker gave us
+        int fps = 30; // preferred frame rate
         int keepaliveSeconds = 20;
         int localRtpPort = 5000;
     };

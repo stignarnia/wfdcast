@@ -52,8 +52,12 @@ pkexec helper → remembered TV: `connect` with saved creds (no Accept), else `s
 the TV opens RTSP to us (if it doesn't within `tvWaitSeconds`, the helper reassociates; max 3 nudges) → PLAY → pipeline.
 If the TV ends a session it usually reconnects by itself; the controller keeps waiting.
 
-Video modes offered in M4 (CEA bitmap bit / H.264 level code, capped to the TV's max level):
-1080p60 bit 8 / 0x10, 1080p30 bit 7 / 0x08, 720p60 bit 6 / 0x02, 720p30 bit 5 / 0x01, 480p60 bit 0 (fallback).
+Video mode in M4: **no resolution setting**. `WfdServer::chooseFormat` matches the size KDE's picker hands over
+(portal stream `size`): an exact mode if the TV advertises it (CEA or VESA bitmap, full WFD tables in
+`src/wfdserver.cpp`), else the smallest mode the source fits in, else the biggest; the preferred frame rate (setting)
+wins ties, then the closest. The pipeline scales with borders only when there is no exact match. H.264 level is
+computed from macroblocks (3.1/3.2/4.1/4.2) and capped to the TV's max level. The reference TV advertises
+CEA `0001ffff` and VESA `0f3fffff` (includes 1440×900, 1366×768, 1600×900, 1680×1050; not 1920×1200/1600×1200).
 The encoder speed/quality slider (1..7) maps to x264 `speed-preset` ultrafast..slow, VA-API `target-usage` 7..1,
 NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the encoder).
 
@@ -185,5 +189,5 @@ TV logs `Miracast_MediaCodecBridge_Java: onOutputBufferAvailable queue video…`
 ## Open items
 
 - Real-TV test of the app end to end (first pairing, saved-pairing reconnect, all three encoders, audio modes, live bitrate).
-- 1080p60 sends level 4.1 in M4 when the TV caps at 4.1, while the encoder may emit 4.2. Check that the TV accepts it.
+- Modes needing level 4.2 (1080p60, 1440×900p60…) are announced as 4.1 because the TV caps at 4.1, while the encoder may emit 4.2. Check that the TV accepts it.
 - Optional: LPCM audio for sinks without AAC. Optional: UIBC (TV remote → mouse/keyboard).
