@@ -14,7 +14,7 @@ Settings::Settings(QObject *parent)
 {
     m_defaults = {
         // Picture
-        {u"fps"_s, 30}, // preferred; the size follows the source KDE gives
+        {u"fps"_s, 60}, // 60: audio is released with each video frame, smaller clumps for the TV
         {u"videoBitrate"_s, 8000}, // kbit/s, changes live
         {u"keyframeSeconds"_s, 1},
         {u"encoder"_s, u"auto"_s}, // auto | x264 | vaapi | nvenc
