@@ -38,6 +38,7 @@ CastController::CastController(Settings *settings, QObject *parent)
     connect(&m_server, &WfdServer::sessionEnded, this, &CastController::onSessionEnded);
     connect(&m_server, &WfdServer::log, this, &CastController::appendLog);
     connect(&m_pipeline, &Pipeline::error, this, &CastController::fail);
+    connect(&m_pipeline, &Pipeline::log, this, &CastController::appendLog);
     connect(&m_helper, &QProcess::readyReadStandardOutput, this, &CastController::onHelperOutput);
     connect(&m_helper, &QProcess::readyReadStandardError, this, [this] {
         const QStringList lines = QString::fromUtf8(m_helper.readAllStandardError()).split(u'\n', Qt::SkipEmptyParts);

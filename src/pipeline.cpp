@@ -67,6 +67,19 @@ QString Pipeline::resolveEncoder(const QString &wanted)
 
 bool Pipeline::start(const Config &c, QString *error)
 {
+    if (startOnce(c, error) || c.sourceWidth <= 0) {
+        return m_pipeline != nullptr;
+    }
+    // The capture refused every size of the source's shape: stream unpinned
+    // (KWin may then stretch) rather than not at all, and say so.
+    Q_EMIT log(u"Could not pin the capture to the source size (%1); streaming without it, the picture may be stretched."_s.arg(*error));
+    Config unpinned = c;
+    unpinned.sourceWidth = unpinned.sourceHeight = 0;
+    return startOnce(unpinned, error);
+}
+
+bool Pipeline::startOnce(const Config &c, QString *error)
+{
     stop();
     m_encoderName = resolveEncoder(c.encoder);
     if (m_encoderName.isEmpty()) {
@@ -85,9 +98,17 @@ bool Pipeline::start(const Config &c, QString *error)
     // Pin the capture to the source's real size: KWin renders the stream at
     // whatever size downstream asks for, so without this it delivers the TV
     // mode's size already stretched and add-borders has nothing to letterbox.
-    const QString sourceCaps = c.sourceWidth > 0 && c.sourceHeight > 0
-        ? u"video/x-raw,width=%1,height=%2 ! "_s.arg(c.sourceWidth).arg(c.sourceHeight)
-        : QString();
+    // The portal reports the logical size; on a scaled (HiDPI) screen KWin's
+    // frames are bigger. Offer the logical size and its 2x/3x multiples: all
+    // have the source's shape, so whichever KWin picks gets letterboxed right.
+    QString sourceCaps;
+    if (c.sourceWidth > 0 && c.sourceHeight > 0) {
+        QStringList sizes;
+        for (int k : {1, 2, 3}) {
+            sizes << u"video/x-raw,width=%1,height=%2"_s.arg(c.sourceWidth * k).arg(c.sourceHeight * k);
+        }
+        sourceCaps = u"capsfilter caps=\"%1\" ! "_s.arg(sizes.join(u"; "_s));
+    }
     QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%4 ! %5"
                     "queue max-size-buffers=2 leaky=downstream ! videorate ! video/x-raw,framerate=%3/1 ! "_s
                         .arg(::dup(c.pipewireFd))
@@ -157,10 +178,23 @@ bool Pipeline::start(const Config &c, QString *error)
     gst_object_unref(clock);
     m_encoder = gst_bin_get_by_name(GST_BIN(m_pipeline), "enc");
     if (gst_element_set_state(m_pipeline, GST_STATE_PLAYING) == GST_STATE_CHANGE_FAILURE) {
-        *error = u"The stream did not start (encoder %1)."_s.arg(m_encoderName);
+        QString why;
+        GstBus *bus = gst_element_get_bus(m_pipeline);
+        if (GstMessage *msg = gst_bus_pop_filtered(bus, GST_MESSAGE_ERROR)) {
+            GError *err = nullptr;
+            gchar *dbg = nullptr;
+            gst_message_parse_error(msg, &err, &dbg);
+            why = u": %1 (%2)"_s.arg(QString::fromUtf8(err ? err->message : ""), QString::fromUtf8(dbg ? dbg : ""));
+            g_clear_error(&err);
+            g_free(dbg);
+            gst_message_unref(msg);
+        }
+        gst_object_unref(bus);
+        *error = u"The stream did not start (encoder %1)%2"_s.arg(m_encoderName, why);
         stop();
         return false;
     }
+    m_sourceCapsLogged = false;
     m_busTimer.start();
     return true;
 }
@@ -200,6 +234,20 @@ void Pipeline::pollBus()
 {
     if (!m_pipeline) {
         return;
+    }
+    if (!m_sourceCapsLogged) {
+        if (GstElement *src = gst_bin_get_by_name(GST_BIN(m_pipeline), "src")) {
+            GstPad *pad = gst_element_get_static_pad(src, "src");
+            if (GstCaps *caps = gst_pad_get_current_caps(pad)) {
+                gchar *s = gst_caps_to_string(caps);
+                Q_EMIT log(u"Screen capture delivers: %1"_s.arg(QString::fromUtf8(s)));
+                g_free(s);
+                gst_caps_unref(caps);
+                m_sourceCapsLogged = true;
+            }
+            gst_object_unref(pad);
+            gst_object_unref(src);
+        }
     }
     GstBus *bus = gst_element_get_bus(m_pipeline);
     while (GstMessage *msg = gst_bus_pop_filtered(bus, GstMessageType(GST_MESSAGE_ERROR | GST_MESSAGE_EOS))) {

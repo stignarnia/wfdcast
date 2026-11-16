@@ -42,13 +42,16 @@ public:
 
 Q_SIGNALS:
     void error(const QString &message);
+    void log(const QString &line);
 
 private:
     void pollBus();
+    bool startOnce(const Config &config, QString *error);
     static QString resolveEncoder(const QString &wanted);
 
     GstElement *m_pipeline = nullptr;
     GstElement *m_encoder = nullptr;
     QString m_encoderName;
     QTimer m_busTimer;
+    bool m_sourceCapsLogged = false;
 };
