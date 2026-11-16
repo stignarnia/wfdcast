@@ -327,8 +327,13 @@ int Pipeline::onScalerEvent(GstPad *, GstPadProbeInfo *info, void *self)
     if (!gst_structure_get_int(st, "width", &w) || !gst_structure_get_int(st, "height", &h) || w <= 0 || h <= 0) {
         return GST_PAD_PROBE_OK;
     }
-    gst_structure_get_fraction(st, "pixel-aspect-ratio", &parN, &parD);
-    const Fit fit = fitInside(w * qMax(1, parN), h * qMax(1, parD), p->m_outW, p->m_outH);
+    // KWin leaves the pixel aspect unset and pipewiresrc then reports a
+    // placeholder (1/2147483647). Only trust plausible values; else square pixels.
+    if (!gst_structure_get_fraction(st, "pixel-aspect-ratio", &parN, &parD) || parN <= 0 || parD <= 0
+        || double(parN) / parD < 0.25 || double(parN) / parD > 4.0) {
+        parN = parD = 1;
+    }
+    const Fit fit = fitInside(int(qint64(w) * parN / qMax(1, parD)), h, p->m_outW, p->m_outH);
     if (fit == p->m_fit) {
         return GST_PAD_PROBE_OK;
     }
