@@ -217,11 +217,27 @@ bool WfdServer::chooseFormat(const QString &sinkFormats)
     const quint32 cea = f.value(4).toUInt(&okCea, 16);
     const quint32 vesa = f.value(5).toUInt(&okVesa, 16);
     const int sinkLevel = f.value(3).toInt(&okLevel, 16);
-    auto supported = [&](const Mode &m) {
+    auto advertised = [&](const Mode &m) {
         if (m.vesa) {
             return okVesa && (vesa & (1u << m.bit));
         }
         return okCea ? bool(cea & (1u << m.bit)) : m.bit == 0; // 640x480 is mandatory
+    };
+
+    // TV players draw any mode over the whole panel without keeping its shape,
+    // so a 16:10 picture gets stretched. The panel shape is taken from the
+    // biggest HD mode the TV advertises (CEA modes are its native TV formats);
+    // only modes of that shape are sent and the picture is letterboxed here.
+    double panelAspect = 0;
+    long biggest = 0;
+    for (const Mode &m : kModes) {
+        if (!m.vesa && m.height >= 720 && advertised(m) && long(m.width) * m.height > biggest) {
+            biggest = long(m.width) * m.height;
+            panelAspect = double(m.width) / m.height;
+        }
+    }
+    auto supported = [&](const Mode &m) {
+        return advertised(m) && (panelAspect <= 0 || qAbs(double(m.width) / m.height - panelAspect) < 0.02);
     };
 
     // Match the source KDE gives us: exact size if the TV has it, else the
@@ -262,7 +278,7 @@ bool WfdServer::chooseFormat(const QString &sinkFormats)
                    .arg(m_width)
                    .arg(m_height)
                    .arg(m_fps)
-                   .arg(best->width == sw && best->height == sh ? u"exact"_s : u"scaled with borders"_s));
+                   .arg(best->width == sw && best->height == sh ? u"exact"_s : u"letterboxed to the TV's shape"_s));
     return true;
 }
 
