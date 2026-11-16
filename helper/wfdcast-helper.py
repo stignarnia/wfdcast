@@ -353,6 +353,9 @@ class Helper:
         self.subscribe(P2P, "DeviceFoundProperties", self.main, self.on_device_found)
         self.subscribe(P2P, "FindStopped", self.main, self.on_find_stopped)
         self.subscribe(P2P, "ProvisionDiscoveryPBCResponse", self.main, self.on_pd_response)
+        # During a join, wpa_supplicant does not emit ProvisionDiscoveryPBCResponse: on the TV's
+        # answer it goes straight to creating its temporary group interface (p2p-<iface>-N).
+        self.subscribe(WPAS, "InterfaceAdded", WPAS_PATH, self.on_interface_added)
         self.subscribe(P2P, "ProvisionDiscoveryFailure", self.main, self.on_pd_failure)
         self.subscribe(WPS, "Credentials", self.wfd, self.on_credentials)
         self.subscribe(WPS, "Event", self.wfd, self.on_wps_event)
@@ -539,6 +542,11 @@ class Helper:
 
     def on_pd_response(self, path):
         if self.phase == "answer" and path == self.peer_path:
+            self.start_wps()
+
+    def on_interface_added(self, _path, props):
+        if self.phase == "answer" and str(props.get("Ifname", "")).startswith("p2p-"):
+            log(f"the TV answered the join request ({props.get('Ifname')} created)")
             self.start_wps()
 
     def on_pd_failure(self, path, code):
