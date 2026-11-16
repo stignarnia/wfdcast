@@ -117,7 +117,7 @@ Kirigami.ApplicationWindow {
                     Kirigami.FormData.label: i18n("Picture")
                 }
                 SettingCombo {
-                    Kirigami.FormData.label: i18n("Preferred frame rate:")
+                    Kirigami.FormData.label: i18n("Frame rate:")
                     enabled: !root.sessionLocked
                     key: "fps"
                     options: [{text: i18n("30 fps"), value: 30}, {text: i18n("60 fps"), value: 60}]
