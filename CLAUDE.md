@@ -86,14 +86,6 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   x264 treats it as an average ceiling, ~10–14 Mbit/s at 17 on desktop content).
 - **Audio leftovers**: a killed app left the null sink loaded. The app quits through the event loop on SIGTERM/SIGINT/SIGHUP
   (KSignalHandler) and removes stale `wfdcast` sinks at startup and before each cast.
-- **The TV stretches every mode to its panel**: an exact 1440×900 (VESA) stream filled the 16:9 panel distorted. Modes
-  are restricted to the TV shape (setting `tvAspect`, default 16:9) and letterboxed here; for a 1440×900 source the
-  reference TV gets 1600×900 (pillarbox, no scaling). The panel resolution (3840 vs 4096) is not exposed by its Miracast
-  reply nor by its Cast `eureka_info`; ADB `wm size` would show it.
-- **Audio analysis on the wire** (20 s captured from the helper's interface): AAC PTS spacing exactly 21.33 ms, no gaps;
-  decoded audio has no dropouts; audio PTS leads PCR by 126–190 ms; PCR every 67 ms. But sending is bursty: 18 pauses
-  > 50 ms (max 63 ms) without any RTP packet. Choppy playback is therefore on the TV side; the TV's own logs (ADB) are
-  the next step, not more guessing.
 - The TV's Accept dialog shows the sender name only after a first successful join (it learns it from the P2P IE in our
   association request); wpa_supplicant's own P2P `DeviceName` is empty on this machine, so the request itself carries none.
 

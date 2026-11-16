@@ -217,25 +217,16 @@ bool WfdServer::chooseFormat(const QString &sinkFormats)
     const quint32 cea = f.value(4).toUInt(&okCea, 16);
     const quint32 vesa = f.value(5).toUInt(&okVesa, 16);
     const int sinkLevel = f.value(3).toInt(&okLevel, 16);
-    auto rightShape = [&](const Mode &m) {
-        if (m_wanted.aspectW <= 0 || m_wanted.aspectH <= 0) {
-            return true;
-        }
-        return qAbs(double(m.width) / m.height - double(m_wanted.aspectW) / m_wanted.aspectH) < 0.02;
-    };
     auto supported = [&](const Mode &m) {
-        if (!rightShape(m)) {
-            return false;
-        }
         if (m.vesa) {
             return okVesa && (vesa & (1u << m.bit));
         }
         return okCea ? bool(cea & (1u << m.bit)) : m.bit == 0; // 640x480 is mandatory
     };
 
-    // Among modes of the TV's shape: the source size exactly if available, else
-    // the smallest mode the source fits in (letterboxed, no upscaling when one
-    // dimension matches), else the biggest. Prefer the wanted frame rate.
+    // Match the source KDE gives us: exact size if the TV has it, else the
+    // smallest mode it fits in, else the biggest mode. Prefer the wanted
+    // frame rate, then the closest one.
     const int sw = m_wanted.sourceWidth > 0 ? m_wanted.sourceWidth : 1920;
     const int sh = m_wanted.sourceHeight > 0 ? m_wanted.sourceHeight : 1080;
     const Mode *best = nullptr;
@@ -271,7 +262,7 @@ bool WfdServer::chooseFormat(const QString &sinkFormats)
                    .arg(m_width)
                    .arg(m_height)
                    .arg(m_fps)
-                   .arg(best->width == sw && best->height == sh ? u"exact"_s : u"letterboxed to keep the shape"_s));
+                   .arg(best->width == sw && best->height == sh ? u"exact"_s : u"scaled with borders"_s));
     return true;
 }
 

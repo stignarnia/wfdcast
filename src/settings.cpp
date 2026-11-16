@@ -15,7 +15,6 @@ Settings::Settings(QObject *parent)
     m_defaults = {
         // Picture
         {u"fps"_s, 30}, // preferred; the size follows the source KDE gives
-        {u"tvAspect"_s, u"16:9"_s}, // TV panel shape; "source" = send the source size as is
         {u"videoBitrate"_s, 8000}, // kbit/s, changes live
         {u"keyframeSeconds"_s, 1},
         {u"encoder"_s, u"auto"_s}, // auto | x264 | vaapi | nvenc

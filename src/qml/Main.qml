@@ -117,15 +117,6 @@ Kirigami.ApplicationWindow {
                     Kirigami.FormData.label: i18n("Picture")
                 }
                 SettingCombo {
-                    Kirigami.FormData.label: i18n("TV screen shape:")
-                    enabled: !root.sessionLocked
-                    key: "tvAspect"
-                    options: [{text: i18n("16:9 (most TVs)"), value: "16:9"},
-                              {text: i18n("16:10"), value: "16:10"},
-                              {text: i18n("4:3"), value: "4:3"},
-                              {text: i18n("Exact source size (TV may stretch)"), value: "source"}]
-                }
-                SettingCombo {
                     Kirigami.FormData.label: i18n("Frame rate:")
                     enabled: !root.sessionLocked
                     key: "fps"
