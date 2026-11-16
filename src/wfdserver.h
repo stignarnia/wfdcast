@@ -20,6 +20,10 @@ public:
     struct Wanted {
         int sourceWidth = 0, sourceHeight = 0; // what KDE's picker gave us
         int fps = 30; // preferred frame rate
+        // TV panel shape as w:h (e.g. 16:9). Modes of other shapes get stretched by the TV,
+        // so only modes of this shape are sent and the picture is letterboxed here.
+        // 0:0 = send the source size as is.
+        int aspectW = 16, aspectH = 9;
         int keepaliveSeconds = 20;
         int localRtpPort = 5000;
     };

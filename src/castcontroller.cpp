@@ -177,6 +177,9 @@ void CastController::onPortalReady(int fd, quint32 node, QSize size)
     wanted.sourceWidth = size.width();
     wanted.sourceHeight = size.height();
     wanted.fps = m_settings->getInt(u"fps"_s);
+    const QStringList aspect = m_settings->getString(u"tvAspect"_s).split(u':');
+    wanted.aspectW = aspect.size() == 2 ? aspect[0].toInt() : 0;
+    wanted.aspectH = aspect.size() == 2 ? aspect[1].toInt() : 0;
     wanted.keepaliveSeconds = m_settings->getInt(u"keepaliveSeconds"_s);
     wanted.localRtpPort = m_settings->getInt(u"rtpPort"_s);
     m_server.setWanted(wanted);
