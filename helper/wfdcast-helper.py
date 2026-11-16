@@ -341,6 +341,8 @@ class Helper:
         self.remove_iface()  # leftovers from a crash
         run(["iw", "dev", self.main_ifname, "interface", "add", iface, "type", "managed"])
         self.created_netdev = True
+        time.sleep(0.2)
+        run(["nmcli", "device", "set", iface, "managed", "no"], check=False)
         self.release_from_networkmanager(iface)
         self.wfd = self.create_wpas_iface(iface)
         self.call(self.wfd, IFACE, "VendorElemAdd", "(iay)",
@@ -372,21 +374,33 @@ class Helper:
         run(["firewall-cmd", "--zone", FW_ZONE, "--add-port", f"{self.o['rtsp_port']}/tcp"])
         self.fw = FW_ZONE
 
+    def nm_state(self, iface):
+        for line in run(["nmcli", "-t", "-f", "DEVICE,STATE", "device"], check=False).splitlines():
+            dev, _, state = line.partition(":")
+            if dev == iface:
+                return state
+        return None
+
     def release_from_networkmanager(self, iface):
-        """NetworkManager grabs every new Wi-Fi device and registers it with
-        wpa_supplicant. Mark ours unmanaged and wait until NM has let go."""
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            states = dict(line.split(":", 1) for line in
-                          run(["nmcli", "-t", "-f", "DEVICE,STATE", "device"], check=False).splitlines()
-                          if ":" in line)
-            if iface in states:
-                if states[iface] == "unmanaged":
-                    break
-                run(["nmcli", "device", "set", iface, "managed", "no"], check=False)
+        """NetworkManager grabs every new Wi-Fi device (a new device briefly shows
+        as "unmanaged" before NM takes it). Always tell NM to leave it alone,
+        then require it to stay unmanaged for a moment before going on, or NM
+        keeps scanning on it and starves the Wi-Fi Direct join of radio time."""
+        deadline = time.monotonic() + 3
+        while self.nm_state(iface) is None and time.monotonic() < deadline:
             time.sleep(0.1)
-        else:
-            log(f"NetworkManager did not report {iface} as unmanaged; continuing anyway")
+        deadline = time.monotonic() + 8
+        stable_since = None
+        while time.monotonic() < deadline:
+            if self.nm_state(iface) == "unmanaged":
+                stable_since = stable_since or time.monotonic()
+                if time.monotonic() - stable_since >= 1.0:
+                    return
+            else:
+                stable_since = None
+                run(["nmcli", "device", "set", iface, "managed", "no"], check=False)
+            time.sleep(0.2)
+        raise RuntimeError(f"NetworkManager keeps managing {iface}; cannot use it")
 
     def wpas_iface_path(self, iface):
         try:
