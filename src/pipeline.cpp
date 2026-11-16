@@ -78,11 +78,16 @@ bool Pipeline::start(const Config &c, QString *error)
     const QString size = u"width=%1,height=%2"_s.arg(c.width).arg(c.height);
     const QString h264 = u"video/x-h264,profile=constrained-baseline,stream-format=byte-stream"_s;
 
-    QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=1000 ! "
+    // KDE only sends a frame when the screen changes. Repeat the last frame every
+    // frame interval so the TV gets a steady stream; with gaps its player stalls
+    // and catches up instead of running at a constant small delay.
+    const int frameMs = qMax(1, 1000 / qMax(1, c.fps));
+    QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%4 ! "
                     "queue max-size-buffers=2 leaky=downstream ! videorate ! video/x-raw,framerate=%3/1 ! "_s
                         .arg(::dup(c.pipewireFd))
                         .arg(c.node)
-                        .arg(c.fps);
+                        .arg(c.fps)
+                        .arg(frameMs);
     if (m_encoderName == u"vaapi"_s) {
         video += u"vapostproc add-borders=true ! video/x-raw(memory:VAMemory),format=NV12,%1,pixel-aspect-ratio=1/1 ! "
                  "vah264enc name=enc bitrate=%2 rate-control=cbr key-int-max=%3 b-frames=0 target-usage=%4 ! %5 ! "_s
@@ -116,7 +121,9 @@ bool Pipeline::start(const Config &c, QString *error)
                                                 : u"avenc_aac bitrate=%1"_s.arg(c.audioKbps * 1000);
     const QString audioSrc = c.audioDevice.isEmpty()
         ? u"audiotestsrc is-live=true wave=silence"_s
-        : u"pulsesrc device=\"%1\" do-timestamp=true provide-clock=false"_s.arg(c.audioDevice);
+        // No do-timestamp: audio sources stamp buffers from the sample count, which
+        // is smooth; arrival-time stamps jitter and the TV plays audio in chunks.
+        : u"pulsesrc device=\"%1\" provide-clock=false"_s.arg(c.audioDevice);
     const QString audio = audioSrc + u" ! audioconvert ! audioresample ! audio/x-raw,rate=48000,channels=2 ! "_s + aac
         + u" ! aacparse ! queue ! mux. "_s;
 
