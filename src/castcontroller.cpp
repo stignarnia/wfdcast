@@ -173,6 +173,7 @@ void CastController::startHelper()
     start.insert(u"rtsp_port"_s, m_settings->getInt(u"rtspPort"_s));
     start.insert(u"throughput"_s, m_settings->getInt(u"throughput"_s));
     start.insert(u"find_timeout"_s, m_settings->getInt(u"findTimeout"_s));
+    start.insert(u"search_round"_s, m_settings->getInt(u"searchRound"_s));
     start.insert(u"answer_timeout"_s, m_settings->getInt(u"answerTimeout"_s));
     start.insert(u"accept_timeout"_s, m_settings->getInt(u"acceptTimeout"_s));
     start.insert(u"assoc_timeout"_s, m_settings->getInt(u"assocTimeout"_s));

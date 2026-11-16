@@ -55,6 +55,7 @@ DEFAULTS = {
     "rtsp_port": 7236,         # port the TV connects to (announced in the WFD IE)
     "throughput": 200,         # Mbit/s announced in the WFD IE
     "find_timeout": 30,        # s to look for the TV
+    "search_round": 10,        # s per Wi-Fi Direct search round (restarted until found)
     "answer_timeout": 15,      # s to wait for the TV to answer the join request
     "accept_timeout": 120,     # s to wait for Accept on the TV
     "assoc_timeout": 20,       # s for a join with the saved passphrase
@@ -478,8 +479,15 @@ class Helper:
 
     # ---- discovery -------------------------------------------------------
     def find(self):
+        """One short search round. A TV that hosts its own group sits on its
+        operating channel (often 5 GHz) and is only seen by a full scan, which
+        wpa_supplicant does once at the start of a search; after that it checks
+        only the social channels 1/6/11. So: progressive discovery (adds one
+        other channel per cycle) and short rounds, restarted on FindStopped,
+        each starting with a full scan."""
         self.call(self.main, P2P, "Find", "(a{sv})",
-                  ({"Timeout": GLib.Variant("i", int(self.o["find_timeout"]))},))
+                  ({"Timeout": GLib.Variant("i", int(self.o["search_round"])),
+                    "DiscoveryType": GLib.Variant("s", "progressive")},))
 
     def scan(self):
         """Look for TVs until one is chosen (Find is restarted when it times out)."""

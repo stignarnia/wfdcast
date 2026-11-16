@@ -33,7 +33,8 @@ Settings::Settings(QObject *parent)
         {u"rtspPort"_s, 7236},
         {u"rtpPort"_s, 5000},
         {u"throughput"_s, 200}, // Mbit/s announced to the TV
-        {u"findTimeout"_s, 30},
+        {u"findTimeout"_s, 60},
+        {u"searchRound"_s, 10}, // s per Wi-Fi Direct search round
         {u"answerTimeout"_s, 15},
         {u"acceptTimeout"_s, 120},
         {u"assocTimeout"_s, 20},
