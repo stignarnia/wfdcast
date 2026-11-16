@@ -160,7 +160,12 @@ def parse_iw(text):
 
 
 class Dhcp:
-    """Minimal DHCPv4 client on one interface (UDP + broadcast flag)."""
+    """Minimal DHCPv4 client on one interface.
+
+    Requests go out over a UDP socket bound to the interface. Replies are read
+    at link level (AF_PACKET), like dhclient/udhcpc/networkd do: before the
+    interface has an address, the kernel's input path (firewall, reverse-path
+    checks) can drop the server's broadcast before a UDP socket ever sees it."""
 
     def __init__(self, iface, mac, hostname):
         self.iface, self.mac, self.hostname = iface, mac, hostname
@@ -202,15 +207,41 @@ class Dhcp:
             i += 2 + data[i + 1]
         return socket.inet_ntoa(data[16:20]), opts
 
+    def _link_socket(self):
+        s = socket.socket(socket.AF_PACKET, socket.SOCK_DGRAM, socket.htons(0x0800))
+        s.bind((self.iface, 0x0800))
+        s.settimeout(1.0)
+        return s
+
+    @staticmethod
+    def _udp_payload_to_68(frame):
+        """IPv4 packet → UDP payload if it is UDP to port 68, else None."""
+        if len(frame) < 28 or frame[0] >> 4 != 4 or frame[9] != 17:
+            return None
+        ihl = (frame[0] & 0x0F) * 4
+        if len(frame) < ihl + 8 or struct.unpack("!H", frame[ihl + 2:ihl + 4])[0] != 68:
+            return None
+        return frame[ihl + 8:]
+
     def _exchange(self, sock, packet, dest, want, xid, timeout):
+        link = self._link_socket()
+        try:
+            return self._exchange_on(link, sock, packet, dest, want, xid, timeout)
+        finally:
+            link.close()
+
+    def _exchange_on(self, link, sock, packet, dest, want, xid, timeout):
         deadline, next_send = time.monotonic() + timeout, 0.0
         while time.monotonic() < deadline:
             if time.monotonic() >= next_send:
                 sock.sendto(packet, dest)
                 next_send = time.monotonic() + 3
             try:
-                data, _ = sock.recvfrom(4096)
+                frame = link.recv(4096)
             except socket.timeout:
+                continue
+            data = self._udp_payload_to_68(frame)
+            if data is None:
                 continue
             r = self._parse(data, xid)
             if not r:
@@ -662,7 +693,8 @@ class Helper:
                 lease = dhcp.acquire(int(self.o["dhcp_timeout"]))
                 GLib.idle_add(lambda: self.guard(self.on_lease, (dhcp, lease)))
             except Exception as e:
-                GLib.idle_add(lambda: self.guard(self.fail, (f"DHCP: {e}",)))
+                msg = f"Could not get an address from the TV (DHCP): {e}"
+                GLib.idle_add(lambda: self.guard(self.fail, (msg,)))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -689,7 +721,7 @@ class Helper:
                 self.lease = lease
                 log(f"DHCP renewed for {lease['lease']} s")
             except Exception as e:
-                log(f"DHCP renew failed: {e}")
+                log(f"DHCP renew failed: {e}")  # str() evaluated here, inside the except
 
         threading.Thread(target=work, daemon=True).start()
         return True
