@@ -134,6 +134,8 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   vapostproc (scale, BGRA keeps alpha) → `vacompositor` (window on sink_0 over a 16×16 live black picture stretched to
   the frame on sink_1) → BGRA → vapostproc NV12 → vah264enc. Verified offline with the app's own Pipeline class
   (opaque red / transparent stale-white source via pipewiresink): 60 fps, bars and transparent parts black.
+  Real casts (user-confirmed): AMD window incl. resizes clean; NVIDIA and x264 window resizes still clean after the
+  re-fit change (pad width/height set too).
 - **vacompositor fails whenever it has no input picture to compose** (`vaEndPicture: operation failed`, reproduced with
   no inputs at all). With PipeWire the caps arrive before the first frame, so it failed at the first output: that was the
   real cause behind "vacompositor fails with PipeWire input". It also doesn't clear its canvas (bars came out white
@@ -149,7 +151,8 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   (`workspace.windowList()`, `desktopFileName` == app id → `pid`, read back from the journal); sink-inputs whose
   `application.process.id` is that pid or a descendant (`/proc/*/status` PPid chain) are moved — like Plasma's audio
   applet. Name matching (binary/name/app id + `.desktop` Exec/Name) is only the fallback when KWin can't be asked.
-  Verified: Firefox PWA (YouTube Music, pid 22656) moved; Konsole window leaves Firefox alone. "TV only" →
+  Verified on the TV: Firefox PWA window plays only its own sound, Konsole window sends none, "Laptop and TV" works.
+  Untested: the name-matching fallback (needs a desktop without KWin). "TV only" →
   null sink `wfdcast` without changing the default; "Laptop and TV" → combine sink `wfdcast_both` (wfdcast + previous
   default). New streams are picked up every 1.5 s; all moved streams go back to the previous default on stop.
 - **60 fps helps audio**: the muxer releases audio with each video frame, so 60 fps halves the clump size; TV overflows
