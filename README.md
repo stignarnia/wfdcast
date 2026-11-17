@@ -41,6 +41,7 @@ costing about 45 seconds per connection on Windows.
 - Sound: on the TV only (a virtual output becomes the default while casting),
   on the laptop and the TV, or none.
 - Hardware encoding on AMD/Intel (VA-API) or NVIDIA (NVENC), or software (x264).
+  **Automatic** encodes on the GPU KDE draws the screen on (see below).
 - 720p/1080p at 30/60 fps. The bitrate can be changed while casting.
 - Remembers the TV: after the first Accept, later casts connect without it.
 - Every tunable (ports, timeouts, names, encoder speed/quality…) is in the UI.
@@ -54,6 +55,28 @@ costing about 45 seconds per connection on Windows.
   KCoreAddons, GStreamer development files.
 - Run: GStreamer good/bad/ugly/libav plugins and the PipeWire plugin,
   python-gobject, `iw`, `pactl`, polkit.
+
+## Automatic encoder and kwin-gpuswitch
+
+On a laptop with two GPUs, encoding on the GPU KWin composites on keeps the
+other GPU asleep and avoids moving every frame between GPUs. **Automatic** finds
+that GPU and encodes there: NVENC on an NVIDIA GPU, VA-API on an AMD or Intel GPU,
+then the others as a fallback, then x264. If an encoder fails at start or within
+3 seconds, the next one takes over and the log says so.
+
+It reads the compositing GPU from, in order:
+
+1. [kwin-gpuswitch](https://github.com/stignarnia/kwin-gpuswitch), if its KWin
+   plugin is loaded (`org.kde.KWin /GpuSwitch`, property `Current`). With it,
+   KWin can move compositing to another GPU during the session, for example to
+   the NVIDIA GPU when a monitor is plugged into its HDMI port, and WFD Cast
+   follows on the next cast.
+2. `KWIN_DRM_DEVICES` in the session environment (its first device).
+3. The GPU with the internal panel (eDP/LVDS/DSI), also when the lid is closed.
+4. The boot display GPU (`boot_vga`).
+5. The GPU driving the first enabled screen.
+
+Without kwin-gpuswitch, steps 2–5 match what stock KWin picks at login.
 
 ## Install
 

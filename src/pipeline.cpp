@@ -66,27 +66,55 @@ Pipeline::Gpu Pipeline::compositingGpu()
     if (!current.isEmpty()) {
         gpu.pci = current;
         gpu.how = u"kwin-gpuswitch"_s;
-    } else {
-        // KWin composites on the GPU driving the internal panel by default.
-        QString first;
-        const QDir drm(u"/sys/class/drm"_s);
-        for (const QString &name : drm.entryList({u"card*-*"_s}, QDir::Dirs | QDir::System)) {
-            QFile enabled(drm.filePath(name + u"/enabled"_s));
-            if (!enabled.open(QIODevice::ReadOnly) || enabled.readAll().trimmed() != "enabled") {
-                continue;
-            }
-            const QString pci = QFileInfo(QFileInfo(drm.filePath(name + u"/device/device"_s)).canonicalFilePath()).fileName();
-            if (first.isEmpty()) {
-                first = pci;
-            }
-            if (name.contains(u"-eDP-"_s) || name.contains(u"-LVDS-"_s) || name.contains(u"-DSI-"_s)) {
-                gpu.pci = pci;
-                gpu.how = u"GPU driving the internal panel"_s;
-                break;
+    }
+    const QDir drm(u"/sys/class/drm"_s);
+    auto pciOfDrm = [&drm](const QString &entry) {
+        return QFileInfo(QFileInfo(drm.filePath(entry + u"/device"_s)).canonicalFilePath()).fileName();
+    };
+    if (gpu.pci.isEmpty()) {
+        // Stock KWin: KWIN_DRM_DEVICES (first entry = primary) if the session sets it.
+        QDBusInterface systemd(u"org.freedesktop.systemd1"_s, u"/org/freedesktop/systemd1"_s,
+                               u"org.freedesktop.systemd1.Manager"_s, QDBusConnection::sessionBus());
+        for (const QString &var : systemd.property("Environment").toStringList()) {
+            if (var.startsWith(u"KWIN_DRM_DEVICES="_s)) {
+                const QString dev = QFileInfo(var.mid(17).section(u':', 0, 0)).canonicalFilePath(); // /dev/dri/cardN
+                if (!dev.isEmpty()) {
+                    gpu.pci = pciOfDrm(QFileInfo(dev).fileName());
+                    gpu.how = u"KWIN_DRM_DEVICES"_s;
+                }
             }
         }
-        if (gpu.pci.isEmpty() && !first.isEmpty()) {
-            gpu.pci = first;
+    }
+    if (gpu.pci.isEmpty()) {
+        // Else KWin composites on the GPU with the internal panel (connector present
+        // even when the panel is off, e.g. lid closed), then the boot display GPU,
+        // then the GPU of the first enabled screen.
+        QString panel, firstEnabled;
+        for (const QString &name : drm.entryList({u"card*-*"_s}, QDir::Dirs | QDir::System)) {
+            const QString pci = QFileInfo(QFileInfo(drm.filePath(name + u"/device/device"_s)).canonicalFilePath()).fileName();
+            if (panel.isEmpty() && (name.contains(u"-eDP-"_s) || name.contains(u"-LVDS-"_s) || name.contains(u"-DSI-"_s))) {
+                panel = pci;
+            }
+            QFile enabled(drm.filePath(name + u"/enabled"_s));
+            if (firstEnabled.isEmpty() && enabled.open(QIODevice::ReadOnly) && enabled.readAll().trimmed() == "enabled") {
+                firstEnabled = pci;
+            }
+        }
+        QString bootVga;
+        for (const QString &dev : QDir(u"/sys/bus/pci/devices"_s).entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+            QFile f(u"/sys/bus/pci/devices/%1/boot_vga"_s.arg(dev));
+            if (f.open(QIODevice::ReadOnly) && f.readAll().trimmed() == "1") {
+                bootVga = dev;
+            }
+        }
+        if (!panel.isEmpty()) {
+            gpu.pci = panel;
+            gpu.how = u"GPU with the internal panel"_s;
+        } else if (!bootVga.isEmpty()) {
+            gpu.pci = bootVga;
+            gpu.how = u"boot display GPU"_s;
+        } else if (!firstEnabled.isEmpty()) {
+            gpu.pci = firstEnabled;
             gpu.how = u"GPU driving the first screen"_s;
         }
     }
