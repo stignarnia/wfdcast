@@ -74,6 +74,7 @@ private:
     void onPlay(const QString &ip, int port, int w, int h, int fps);
     void onSessionEnded(const QString &reason);
     void onSettingChanged(const QString &key, const QVariant &value);
+    void updateCastingStatus();
 
     Settings *m_settings;
     Portal m_portal;
@@ -94,6 +95,7 @@ private:
     int m_pwFd = -1;
     quint32 m_pwNode = 0;
     QSize m_sourceSize;
+    int m_castW = 0, m_castH = 0, m_castFps = 0;
     QString m_audioDevice;
     QString m_targetMac;
     QString m_targetName;

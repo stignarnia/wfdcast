@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: 2026 stignarnia
 // SPDX-License-Identifier: MIT
 #include "pipeline.h"
+#include <QFileInfo>
+#include <QFile>
+#include <QDir>
+#include <QDateTime>
+#include <QDBusInterface>
+#include <QDBusConnection>
 
 #include <QRegularExpression>
 
@@ -52,29 +58,112 @@ QStringList Pipeline::availableEncoders()
     return out;
 }
 
-QString Pipeline::resolveEncoder(const QString &wanted)
+Pipeline::Gpu Pipeline::compositingGpu()
 {
-    const QStringList have = availableEncoders();
-    if (wanted != u"auto"_s) {
-        return have.contains(wanted) ? wanted : QString();
-    }
-    // Auto: the GPU that usually drives the screen first, then the discrete one, then software.
-    for (const QString &e : {u"vaapi"_s, u"nvenc"_s, u"x264"_s}) {
-        if (have.contains(e)) {
-            return e;
+    Gpu gpu;
+    QDBusInterface kwin(u"org.kde.KWin"_s, u"/GpuSwitch"_s, u"org.kde.KWin.GpuSwitch"_s, QDBusConnection::sessionBus());
+    const QString current = kwin.isValid() ? kwin.property("Current").toString() : QString();
+    if (!current.isEmpty()) {
+        gpu.pci = current;
+        gpu.how = u"kwin-gpuswitch"_s;
+    } else {
+        // KWin composites on the GPU driving the internal panel by default.
+        QString first;
+        const QDir drm(u"/sys/class/drm"_s);
+        for (const QString &name : drm.entryList({u"card*-*"_s}, QDir::Dirs | QDir::System)) {
+            QFile enabled(drm.filePath(name + u"/enabled"_s));
+            if (!enabled.open(QIODevice::ReadOnly) || enabled.readAll().trimmed() != "enabled") {
+                continue;
+            }
+            const QString pci = QFileInfo(QFileInfo(drm.filePath(name + u"/device/device"_s)).canonicalFilePath()).fileName();
+            if (first.isEmpty()) {
+                first = pci;
+            }
+            if (name.contains(u"-eDP-"_s) || name.contains(u"-LVDS-"_s) || name.contains(u"-DSI-"_s)) {
+                gpu.pci = pci;
+                gpu.how = u"GPU driving the internal panel"_s;
+                break;
+            }
+        }
+        if (gpu.pci.isEmpty() && !first.isEmpty()) {
+            gpu.pci = first;
+            gpu.how = u"GPU driving the first screen"_s;
         }
     }
-    return {};
+    if (gpu.pci.isEmpty()) {
+        return gpu;
+    }
+    QFile vendor(u"/sys/bus/pci/devices/%1/vendor"_s.arg(gpu.pci));
+    if (vendor.open(QIODevice::ReadOnly)) {
+        const QByteArray v = vendor.readAll().trimmed();
+        gpu.vendor = v == "0x10de" ? u"nvidia"_s : v == "0x1002" ? u"amd"_s : v == "0x8086" ? u"intel"_s : QString::fromLatin1(v);
+    }
+    const QStringList nodes = QDir(u"/sys/bus/pci/devices/%1/drm"_s.arg(gpu.pci)).entryList({u"renderD*"_s}, QDir::Dirs);
+    gpu.renderNode = nodes.value(0);
+    return gpu;
+}
+
+QStringList Pipeline::autoOrder(const Gpu &gpu)
+{
+    const QStringList have = availableEncoders();
+    const QStringList preferred = gpu.vendor == u"nvidia"_s ? QStringList{u"nvenc"_s, u"vaapi"_s, u"x264"_s}
+                                                            : QStringList{u"vaapi"_s, u"nvenc"_s, u"x264"_s};
+    QStringList out;
+    for (const QString &e : preferred) {
+        if (have.contains(e)) {
+            out << e;
+        }
+    }
+    return out;
+}
+
+QString Pipeline::vaElement(const QString &suffix) const
+{
+    // gst-va names elements of non-default devices like "varenderD129h264enc".
+    const QString perDevice = u"va%1%2"_s.arg(m_vaNode, suffix);
+    if (!m_vaNode.isEmpty() && hasElement(perDevice.toLatin1().constData())) {
+        return perDevice;
+    }
+    return u"va"_s + suffix;
 }
 
 bool Pipeline::start(const Config &c, QString *error)
 {
-    stop();
-    m_encoderName = resolveEncoder(c.encoder);
-    if (m_encoderName.isEmpty()) {
+    m_config = c;
+    QStringList candidates;
+    if (c.encoder == u"auto"_s) {
+        const Gpu gpu = compositingGpu();
+        m_vaNode = gpu.renderNode;
+        candidates = autoOrder(gpu);
+        Q_EMIT log(u"Automatic encoder: KDE composites on %1 (%2, %3) → trying %4"_s.arg(
+            gpu.vendor.isEmpty() ? u"an unknown GPU"_s : gpu.vendor, gpu.pci, gpu.how, candidates.join(u", "_s)));
+    } else {
+        m_vaNode.clear();
+        if (availableEncoders().contains(c.encoder)) {
+            candidates << c.encoder;
+        }
+    }
+    if (candidates.isEmpty()) {
         *error = u"The %1 encoder is not available on this system."_s.arg(c.encoder);
         return false;
     }
+    while (!candidates.isEmpty()) {
+        const QString enc = candidates.takeFirst();
+        if (startOnce(c, enc, error)) {
+            m_fallbacks = candidates;
+            return true;
+        }
+        if (!candidates.isEmpty()) {
+            Q_EMIT log(u"%1 encoder failed to start (%2); trying %3"_s.arg(enc, *error, candidates.first()));
+        }
+    }
+    return false;
+}
+
+bool Pipeline::startOnce(const Config &c, const QString &encoder, QString *error)
+{
+    stop();
+    m_encoderName = encoder;
     const int q = qBound(1, c.quality, 7);
     const int gop = qMax(1, c.keyframeSeconds * c.fps);
     const QString size = u"width=%1,height=%2"_s.arg(c.width).arg(c.height);
@@ -113,10 +202,12 @@ bool Pipeline::start(const Config &c, QString *error)
         // Borders are added in BGRx: vapostproc fills them with zeros, which is black
         // in RGB but green in NV12. A last vapostproc converts to NV12 for the encoder.
         mem = u"(memory:VAMemory)"_s;
-        scale = u"vapostproc name=fitscale"_s;
-        place = u"vapostproc add-borders=true ! video/x-raw%1,format=BGRx,%2,pixel-aspect-ratio=1/1 ! "
-                "vapostproc ! video/x-raw%1,format=NV12 ! videorate ! video/x-raw%1,framerate=%3/1 ! "_s.arg(mem, size)
-                    .arg(c.fps);
+        const QString pp = vaElement(u"postproc"_s);
+        scale = pp + u" name=fitscale"_s;
+        place = u"%4 add-borders=true ! video/x-raw%1,format=BGRx,%2,pixel-aspect-ratio=1/1 ! "
+                "%4 ! video/x-raw%1,format=NV12 ! videorate ! video/x-raw%1,framerate=%3/1 ! "_s.arg(mem, size)
+                    .arg(c.fps)
+                    .arg(pp);
     } else {
         // NVIDIA / software: the compositor places the picture on a black frame and
         // emits exactly <fps> frames per second of real time.
@@ -140,11 +231,12 @@ bool Pipeline::start(const Config &c, QString *error)
         mem, m_encoderName == u"vaapi"_s ? u"BGRx"_s : format);
     video += u"%1 ! capsfilter name=fitcaps caps=\"%2\" ! %3"_s.arg(scale, m_fitCapsTemplate.arg(m_fit.w).arg(m_fit.h), place);
     if (m_encoderName == u"vaapi"_s) {
-        video += u"vah264enc name=enc bitrate=%1 rate-control=cbr key-int-max=%2 b-frames=0 target-usage=%3 ! %4 ! "_s
+        video += u"%5 name=enc bitrate=%1 rate-control=cbr key-int-max=%2 b-frames=0 target-usage=%3 ! %4 ! "_s
                      .arg(c.videoKbps)
                      .arg(gop)
                      .arg(8 - q)
-                     .arg(h264);
+                     .arg(h264)
+                     .arg(vaElement(u"h264enc"_s));
     } else if (m_encoderName == u"nvenc"_s) {
         video += u"nvh264enc name=enc bitrate=%1 rc-mode=cbr gop-size=%2 bframes=0 zerolatency=true preset=p%3 "
                  "tune=ultra-low-latency ! %4 ! "_s
@@ -228,6 +320,7 @@ bool Pipeline::start(const Config &c, QString *error)
         return false;
     }
     m_sourceCapsLogged = false;
+    m_startedAtMs = QDateTime::currentMSecsSinceEpoch();
     m_busTimer.start();
     return true;
 }
@@ -304,6 +397,21 @@ void Pipeline::pollBus()
         }
         gst_message_unref(msg);
         gst_object_unref(bus);
+        if (!m_fallbacks.isEmpty() && QDateTime::currentMSecsSinceEpoch() - m_startedAtMs < 3000) {
+            const QString failed = m_encoderName;
+            QStringList rest = m_fallbacks;
+            QString err;
+            while (!rest.isEmpty()) {
+                const QString next = rest.takeFirst();
+                Q_EMIT log(u"%1 encoder failed right after starting (%2); trying %3"_s.arg(failed, text, next));
+                if (startOnce(m_config, next, &err)) {
+                    m_fallbacks = rest;
+                    Q_EMIT encoderChanged();
+                    return;
+                }
+            }
+            text += u" (no other encoder worked: "_s + err + u")"_s;
+        }
         Q_EMIT error(text);
         return;
     }

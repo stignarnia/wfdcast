@@ -58,6 +58,13 @@ Video mode in M4: **no resolution setting**. `WfdServer::chooseFormat` matches t
 wins ties, then the closest. The pipeline scales with borders only when there is no exact match. H.264 level is
 computed from macroblocks (3.1/3.2/4.1/4.2) and capped to the TV's max level. The reference TV advertises
 CEA `0001ffff` and VESA `0f3fffff` (includes 1440×900, 1366×768, 1600×900, 1680×1050; not 1920×1200/1600×1200).
+Automatic encoder: the GPU KWin composites on, from kwin-gpuswitch's D-Bus property (`org.kde.KWin /GpuSwitch
+org.kde.KWin.GpuSwitch.Current`, PCI address) or else the GPU driving the internal panel / first enabled screen
+(`/sys/class/drm/card*-*`); vendor from `/sys/bus/pci/devices/<pci>/vendor`. NVIDIA → NVENC first, AMD/Intel → VA-API
+first (per-device `varenderD*` elements when that GPU isn't the default VA device), then the others, then x264. An
+encoder that fails at start or within 3 s is replaced by the next one (logged). Reference laptop: KWin on AMD
+0000:65:00.0 (renderD128, eDP-1); NVIDIA is 0000:64:00.0 (renderD129, no VA driver).
+
 The encoder speed/quality slider (1..7) maps to x264 `speed-preset` ultrafast..slow, VA-API `target-usage` 7..1,
 NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the encoder).
 

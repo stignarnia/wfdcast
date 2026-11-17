@@ -140,7 +140,7 @@ Kirigami.ApplicationWindow {
                     enabled: !root.sessionLocked
                     key: "encoder"
                     options: {
-                        const all = [{text: i18n("Automatic"), value: "auto"},
+                        const all = [{text: i18n("Automatic (GPU KDE draws the screen on)"), value: "auto"},
                                      {text: i18n("AMD / Intel GPU (VA-API)"), value: "vaapi"},
                                      {text: i18n("NVIDIA GPU (NVENC)"), value: "nvenc"},
                                      {text: i18n("Software (x264)"), value: "x264"}]

@@ -39,6 +39,7 @@ CastController::CastController(Settings *settings, QObject *parent)
     connect(&m_server, &WfdServer::log, this, &CastController::appendLog);
     connect(&m_pipeline, &Pipeline::error, this, &CastController::fail);
     connect(&m_pipeline, &Pipeline::log, this, &CastController::appendLog);
+    connect(&m_pipeline, &Pipeline::encoderChanged, this, &CastController::updateCastingStatus);
     connect(&m_helper, &QProcess::readyReadStandardOutput, this, &CastController::onHelperOutput);
     connect(&m_helper, &QProcess::readyReadStandardError, this, [this] {
         const QStringList lines = QString::fromUtf8(m_helper.readAllStandardError()).split(u'\n', Qt::SkipEmptyParts);
@@ -383,12 +384,21 @@ void CastController::onPlay(const QString &ip, int port, int w, int h, int fps)
         return;
     }
     setState(u"streaming"_s);
+    m_castW = w;
+    m_castH = h;
+    m_castFps = fps;
+    updateCastingStatus();
+}
+
+void CastController::updateCastingStatus()
+{
     // Numbers as strings: i18n() would add thousands separators ("1,920").
     const QSize pic = m_pipeline.pictureSize();
     setStatus(i18n("Casting to %1: picture %2×%3 in %4×%5 at %6 fps (%7 encoder).",
                    m_targetName.isEmpty() ? m_targetMac : m_targetName, QString::number(pic.width()),
-                   QString::number(pic.height()), QString::number(w), QString::number(h), QString::number(fps),
-                   m_pipeline.encoderInUse()));
+                   QString::number(pic.height()), QString::number(m_castW), QString::number(m_castH),
+                   QString::number(m_castFps), m_pipeline.encoderInUse()));
+    Q_EMIT stateChanged();
 }
 
 void CastController::onSessionEnded(const QString &reason)

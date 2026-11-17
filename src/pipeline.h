@@ -47,6 +47,7 @@ public:
 Q_SIGNALS:
     void error(const QString &message);
     void log(const QString &line);
+    void encoderChanged(); // an early failure moved to another encoder
 
 private:
     void pollBus();
@@ -59,7 +60,22 @@ private:
     static Fit fitInside(int srcW, int srcH, int outW, int outH);
     void applyFit(const Fit &fit); // live: scaler caps + borders
     static int onScalerEvent(GstPad *pad, GstPadProbeInfo *info, void *self);
-    static QString resolveEncoder(const QString &wanted);
+    bool startOnce(const Config &config, const QString &encoder, QString *error);
+
+    // The GPU KWin composites on (its frames come from there; encoding on the same
+    // GPU avoids a copy and keeps the other GPU asleep): kwin-gpuswitch's D-Bus
+    // property if loaded, else the GPU driving the internal panel / first screen.
+    struct Gpu {
+        QString pci, vendor, renderNode, how;
+    };
+    static Gpu compositingGpu();
+    static QStringList autoOrder(const Gpu &gpu); // available encoders, best first
+    QString vaElement(const QString &suffix) const; // per-device VA element if any
+
+    Config m_config;
+    QStringList m_fallbacks; // remaining encoders to try if the current one fails early
+    qint64 m_startedAtMs = 0;
+    QString m_vaNode; // render node of the GPU used for VA-API, e.g. renderD128
 
     GstElement *m_pipeline = nullptr;
     GstElement *m_encoder = nullptr;
