@@ -131,9 +131,9 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   (1440×900 → 1600×900 with pillar bars, no scaling). No setting. Panel resolution (3840/4096) is not exposed by the
   Miracast reply nor the Cast `eureka_info`; ADB `wm size` would show it.
 - **Window leftovers = alpha**: KWin window frames (AR24) have transparent shadow margins with stale colour values.
-  NVENC/x264 paths blend onto black (compositor) and are clean (user-confirmed). AMD window path: vapostproc → BGRA
-  system memory (alpha kept) → CPU `compositor background=black` (outputs BGRA only; BGRx/NV12 = not-negotiated) →
-  vapostproc → NV12 VAMemory → vah264enc. Verified: alpha-0 stale pixels → black, 60 fps.
+  NVENC/x264 paths blend onto black (compositor) and are clean (user-confirmed). AMD window path: `glupload` → `glvideomixer
+  background=black` (scales/blends/places on the GPU, 118 fps max) → `gldownload` RGBA → vapostproc NV12 → vah264enc.
+  The CPU compositor variant reached only 76 fps max and made the TV fall behind; GL→DMA-BUF→vapostproc doesn't negotiate.
 - **Window audio**: for a shared window (portal `source_type` 2) the app id comes from KWin's stream name
   (`media.name` = `kwin-screencast-<app id>`, via `pw-dump`). The window's process ids come from a one-shot KWin script
   (`workspace.windowList()`, `desktopFileName` == app id → `pid`, read back from the journal); sink-inputs whose

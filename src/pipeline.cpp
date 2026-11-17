@@ -239,20 +239,25 @@ bool Pipeline::startOnce(const Config &c, const QString &candidate, QString *err
                         .arg(memIn);
     QString scale, place, mem;
     const QString format = m_encoderName == u"x264"_s ? u"I420"_s : u"NV12"_s;
+    bool fitCapsFilter = true;
     if (m_encoderName == u"vaapi"_s && c.windowSource) {
         // Window on AMD: KWin's window frames (AR24) have transparent shadow margins whose
-        // colour values hold stale pixels, and vapostproc drops alpha. Scale on the GPU
-        // keeping alpha (BGRA, system memory), blend onto black with the CPU compositor
-        // at the fitted size (it outputs BGRA, not BGRx/NV12), convert to NV12 on the GPU.
+        // colour values hold stale pixels, and vapostproc drops alpha. glvideomixer scales,
+        // blends onto black and places the picture on the GPU (118 fps max at 2880x1800;
+        // the CPU compositor managed 76 and fell behind), then VA encodes. GL can't export
+        // a DMA-BUF that vapostproc negotiates, so the 1080p frame crosses system memory.
         mem = u"(memory:VAMemory)"_s;
-        const QString pp = vaElement(u"postproc"_s);
-        scale = pp + u" name=fitscale"_s;
-        place = u"compositor background=black name=comp sink_0::xpos=%1 sink_0::ypos=%2 ! "
-                "video/x-raw,format=BGRA,%3,framerate=%4/1,pixel-aspect-ratio=1/1 ! %5 ! video/x-raw%6,format=NV12 ! "_s.arg(m_fit.left)
+        fitCapsFilter = false;
+        scale = u"glupload name=fitscale"_s;
+        place = u"glvideomixer background=black name=comp sink_0::xpos=%1 sink_0::ypos=%2 sink_0::width=%3 sink_0::height=%4 ! "
+                "video/x-raw(memory:GLMemory),format=RGBA,%5,framerate=%6/1 ! gldownload ! video/x-raw,format=RGBA ! "
+                "%7 ! video/x-raw%8,format=NV12 ! "_s.arg(m_fit.left)
                     .arg(m_fit.top)
+                    .arg(m_fit.w)
+                    .arg(m_fit.h)
                     .arg(size)
                     .arg(c.fps)
-                    .arg(pp, mem);
+                    .arg(vaElement(u"postproc"_s), mem);
     } else if (m_encoderName == u"vaapi"_s) {
         // AMD: vacompositor fails in the driver with PipeWire input ("vaEndPicture:
         // operation failed"), so a second vapostproc adds the borders around the
@@ -285,10 +290,9 @@ bool Pipeline::startOnce(const Config &c, const QString &candidate, QString *err
                     .arg(mem, format, size)
                     .arg(c.fps);
     }
-    m_fitCapsTemplate = m_encoderName == u"vaapi"_s && c.windowSource
-        ? u"video/x-raw,format=BGRA,width=%1,height=%2,pixel-aspect-ratio=1/1"_s // system memory, alpha kept
-        : u"video/x-raw%1,format=%2,width=%3,height=%4,pixel-aspect-ratio=1/1"_s.arg(mem, m_encoderName == u"vaapi"_s ? u"BGRx"_s : format);
-    video += u"%1 ! capsfilter name=fitcaps caps=\"%2\" ! %3"_s.arg(scale, m_fitCapsTemplate.arg(m_fit.w).arg(m_fit.h), place);
+    m_fitCapsTemplate = u"video/x-raw%1,format=%2,width=%3,height=%4,pixel-aspect-ratio=1/1"_s.arg(mem, m_encoderName == u"vaapi"_s ? u"BGRx"_s : format);
+    video += fitCapsFilter ? u"%1 ! capsfilter name=fitcaps caps=\"%2\" ! %3"_s.arg(scale, m_fitCapsTemplate.arg(m_fit.w).arg(m_fit.h), place)
+                           : u"%1 ! %2"_s.arg(scale, place);
     if (m_encoderName == u"vaapi"_s) {
         video += u"%5 name=enc bitrate=%1 rate-control=cbr key-int-max=%2 b-frames=0 target-usage=%3 ! %4 ! "_s
                      .arg(c.videoKbps)
@@ -503,16 +507,19 @@ Pipeline::Fit Pipeline::fitInside(int srcW, int srcH, int outW, int outH)
 
 void Pipeline::applyFit(const Fit &f)
 {
-    if (!m_fitCaps) {
+    if (!m_fitCaps && !m_box) {
         return;
     }
-    GstCaps *caps = gst_caps_from_string(m_fitCapsTemplate.arg(f.w).arg(f.h).toUtf8().constData());
     if (GstPad *pad = m_box ? gst_element_get_static_pad(m_box, "sink_0") : nullptr) {
-        g_object_set(pad, "xpos", f.left, "ypos", f.top, nullptr);
+        // position, and size (only the GL mixer scales; for the others it equals the input)
+        g_object_set(pad, "xpos", f.left, "ypos", f.top, "width", f.w, "height", f.h, nullptr);
         gst_object_unref(pad);
     }
-    g_object_set(m_fitCaps, "caps", caps, nullptr);
-    gst_caps_unref(caps);
+    if (m_fitCaps) {
+        GstCaps *caps = gst_caps_from_string(m_fitCapsTemplate.arg(f.w).arg(f.h).toUtf8().constData());
+        g_object_set(m_fitCaps, "caps", caps, nullptr);
+        gst_caps_unref(caps);
+    }
     m_fit = f;
 }
 
