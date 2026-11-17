@@ -60,7 +60,8 @@ private:
     void fail(const QString &message);
     void finishStop();
 
-    void onPortalReady(int fd, quint32 node, QSize size);
+    void onPortalReady(int fd, quint32 node, QSize size, uint sourceType);
+    static QString windowAppId(quint32 node); // app id of a shared window's KWin stream
     void startHelper();
     void sendHelper(const QJsonObject &cmd);
     void onHelperOutput();

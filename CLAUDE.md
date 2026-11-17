@@ -130,6 +130,11 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   automatically from the biggest HD CEA mode the TV advertises, sends only modes of that shape and letterboxes here
   (1440×900 → 1600×900 with pillar bars, no scaling). No setting. Panel resolution (3840/4096) is not exposed by the
   Miracast reply nor the Cast `eureka_info`; ADB `wm size` would show it.
+- **Window audio**: for a shared window (portal `source_type` 2) the app id comes from KWin's stream name
+  (`media.name` = `kwin-screencast-<app id>`, via `pw-dump`). Only that app's sink-inputs are moved (matched on
+  `application.process.binary` / `application.name` / app id, normalized, plus the `.desktop` Exec/Name): "TV only" →
+  null sink `wfdcast` without changing the default; "Laptop and TV" → combine sink `wfdcast_both` (wfdcast + previous
+  default). New streams are picked up every 1.5 s; all moved streams go back to the previous default on stop.
 - **60 fps helps audio**: the muxer releases audio with each video frame, so 60 fps halves the clump size; TV overflows
   went from ~120 to ~96 per 10 s and the user heard the difference. Default fps is 60. Not fully fixed.
 - **Audio on the wire** (20 s captured on the helper's interface): AAC PTS exactly 21.33 ms apart, no gaps, decoded audio

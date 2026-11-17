@@ -6,6 +6,8 @@
 #include <KLocalizedString>
 #include <QDateTime>
 #include <QJsonDocument>
+#include <QProcess>
+#include <QJsonArray>
 
 #include <qt6keychain/keychain.h>
 
@@ -39,6 +41,7 @@ CastController::CastController(Settings *settings, QObject *parent)
     connect(&m_server, &WfdServer::log, this, &CastController::appendLog);
     connect(&m_pipeline, &Pipeline::error, this, &CastController::fail);
     connect(&m_pipeline, &Pipeline::log, this, &CastController::appendLog);
+    connect(&m_audio, &AudioRouter::log, this, &CastController::appendLog);
     connect(&m_pipeline, &Pipeline::encoderChanged, this, &CastController::updateCastingStatus);
     connect(&m_helper, &QProcess::readyReadStandardOutput, this, &CastController::onHelperOutput);
     connect(&m_helper, &QProcess::readyReadStandardError, this, [this] {
@@ -160,7 +163,27 @@ void CastController::start()
     m_portal.start(types ? types : 7, m_settings->getString(u"cursorMode"_s) == u"hidden"_s ? 1 : 2);
 }
 
-void CastController::onPortalReady(int fd, quint32 node, QSize size)
+QString CastController::windowAppId(quint32 node)
+{
+    // KWin names a window's screencast stream "kwin-screencast-<app id>".
+    QProcess p;
+    p.start(u"pw-dump"_s, {});
+    if (!p.waitForFinished(5000)) {
+        return {};
+    }
+    const QJsonArray objects = QJsonDocument::fromJson(p.readAllStandardOutput()).array();
+    for (const QJsonValue &v : objects) {
+        const QJsonObject o = v.toObject();
+        if (o.value(u"id"_s).toInt() != int(node)) {
+            continue;
+        }
+        const QString name = o.value(u"info"_s).toObject().value(u"props"_s).toObject().value(u"media.name"_s).toString();
+        return name.startsWith(u"kwin-screencast-"_s) ? name.mid(16) : QString();
+    }
+    return {};
+}
+
+void CastController::onPortalReady(int fd, quint32 node, QSize size, uint sourceType)
 {
     if (m_pwFd >= 0) {
         ::close(m_pwFd);
@@ -171,7 +194,12 @@ void CastController::onPortalReady(int fd, quint32 node, QSize size)
     appendLog(u"Screen source ready: PipeWire node %1, %2×%3"_s.arg(node).arg(size.width()).arg(size.height()));
 
     QString audioWarning;
-    m_audioDevice = m_audio.setup(m_settings->getString(u"audioMode"_s), &audioWarning);
+    const QString appId = sourceType == 2 ? windowAppId(node) : QString();
+    if (sourceType == 2) {
+        appendLog(appId.isEmpty() ? u"Shared a window, but could not tell its application: sending all audio."_s
+                                  : u"Shared a window of %1."_s.arg(appId));
+    }
+    m_audioDevice = m_audio.setup(m_settings->getString(u"audioMode"_s), appId, &audioWarning);
     if (!audioWarning.isEmpty()) {
         appendLog(audioWarning);
     }

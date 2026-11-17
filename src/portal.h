@@ -20,7 +20,8 @@ public:
     void close();
 
 Q_SIGNALS:
-    void ready(int pipewireFd, quint32 node, QSize size);
+    // sourceType: 1 monitor, 2 window, 4 virtual (0 unknown)
+    void ready(int pipewireFd, quint32 node, QSize size, uint sourceType);
     void failed(const QString &message);
     void closed();
 

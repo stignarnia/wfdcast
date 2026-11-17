@@ -108,6 +108,7 @@ void Portal::onResponse(uint code, const QVariantMap &results)
         disconnectRequest();
         quint32 node = 0;
         QSize size;
+        uint sourceType = 0;
         const QDBusArgument streams = results.value(u"streams"_s).value<QDBusArgument>();
         streams.beginArray();
         if (!streams.atEnd()) {
@@ -115,6 +116,7 @@ void Portal::onResponse(uint code, const QVariantMap &results)
             streams.beginStructure();
             streams >> node >> props;
             streams.endStructure();
+            sourceType = props.value(u"source_type"_s).toUInt();
             const QDBusArgument sz = props.value(u"size"_s).value<QDBusArgument>();
             if (sz.currentType() == QDBusArgument::StructureType) {
                 int w = 0, h = 0;
@@ -136,7 +138,7 @@ void Portal::onResponse(uint code, const QVariantMap &results)
             Q_EMIT failed(u"Could not open the PipeWire stream: %1"_s.arg(reply.error().message()));
             return;
         }
-        Q_EMIT ready(::dup(reply.value().fileDescriptor()), node, size);
+        Q_EMIT ready(::dup(reply.value().fileDescriptor()), node, size, sourceType);
         break;
     }
     case Step::None:
