@@ -96,6 +96,12 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
 - **GPU memory**: each encoder first takes KWin's frames as DMA-BUF when it runs on the GPU KWin composites on (VA-API
   imports directly; NVENC via `glupload` → `cudaupload`), then falls back to system memory, then to the next encoder
   (logged; status shows e.g. "vaapi encoder, GPU memory"). A GPU can't import another GPU's buffers.
+- **GPU memory verified on both GPUs** (real casts): AMD — KWin DMA-BUF `AR24:0x0200000010401b04` → vapostproc, app at
+  ~3 % of one core; NVIDIA (KWin moved with `kwin-gpu nvidia`) — DMA-BUF `AR24:0x0300000000e08014` → glupload →
+  cudaupload → NVENC, ~18.5 % of one core, 60 fps, black bars, two send gaps up to 123 ms in 4 s. Why GL on NVIDIA: in
+  GStreamer 1.28.9 neither `cudaupload` nor `nvh264enc` accepts DMA-BUF (both accept GLMemory); `vulkanupload` takes
+  only system memory / VulkanBuffer (no DMA-BUF import), so a Vulkan route would need a copy. Not tried: a pure GL
+  route (glcolorscale + glvideomixer → nvh264enc GLMemory), which might cost less CPU than GL→CUDA interop.
 - **KWin offers tiled DMA-BUFs** (`DMA_DRM`, AMD modifier `0x0200000010401b04`) when the caps after `pipewiresrc` allow
   them; vapostproc accepted them and the stream died with "Internal data stream error". That diagnosis was wrong:
   the same error happened with system memory; the cause was vacompositor + a leaky queue. GPU memory is tried again
