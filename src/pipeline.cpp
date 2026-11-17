@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 stignarnia
 // SPDX-License-Identifier: MIT
 #include "pipeline.h"
+#include <QRect>
 #include <QFileInfo>
 #include <QFile>
 #include <QDir>
@@ -11,6 +12,7 @@
 #include <QRegularExpression>
 
 #include <gst/gst.h>
+#include <gst/video/video.h>
 
 #include <unistd.h>
 
@@ -219,6 +221,8 @@ bool Pipeline::startOnce(const Config &c, const QString &candidate, QString *err
     // When the delivered shape changes (resized window) onScalerEvent() re-fits live.
     m_outW = c.width;
     m_outH = c.height;
+    m_cropArea = QRect();
+    m_frameW = m_frameH = 0;
     m_fit = fitInside(c.sourceWidth > 0 ? c.sourceWidth : c.width, c.sourceHeight > 0 ? c.sourceHeight : c.height, c.width, c.height);
     // System memory (video/x-raw): KWin hands over plain buffers that any encoder
     // can upload. GPU memory (DMA-BUF): no copy, but only the GPU that rendered the
@@ -338,7 +342,8 @@ bool Pipeline::startOnce(const Config &c, const QString &candidate, QString *err
     m_box = gst_bin_get_by_name(GST_BIN(m_pipeline), "comp");
     if (GstElement *scaler = gst_bin_get_by_name(GST_BIN(m_pipeline), "fitscale")) {
         GstPad *sink = gst_element_get_static_pad(scaler, "sink");
-        gst_pad_add_probe(sink, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, GstPadProbeCallback(&Pipeline::onScalerEvent), this, nullptr);
+        gst_pad_add_probe(sink, GstPadProbeType(GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_BUFFER),
+                          GstPadProbeCallback(&Pipeline::onScalerEvent), this, nullptr);
         gst_object_unref(sink);
         gst_object_unref(scaler);
     }
@@ -501,41 +506,75 @@ void Pipeline::applyFit(const Fit &f)
 int Pipeline::onScalerEvent(GstPad *, GstPadProbeInfo *info, void *self)
 {
     auto *p = static_cast<Pipeline *>(self);
-    GstEvent *event = GST_PAD_PROBE_INFO_EVENT(info);
-    if (GST_EVENT_TYPE(event) != GST_EVENT_CAPS) {
-        return GST_PAD_PROBE_OK;
-    }
-    GstCaps *caps = nullptr;
-    gst_event_parse_caps(event, &caps);
-    const GstStructure *st = gst_caps_get_structure(caps, 0);
     int w = 0, h = 0, parN = 1, parD = 1;
-    if (!gst_structure_get_int(st, "width", &w) || !gst_structure_get_int(st, "height", &h) || w <= 0 || h <= 0) {
+    QString what;
+    if (GST_PAD_PROBE_INFO_TYPE(info) & GST_PAD_PROBE_TYPE_BUFFER) {
+        // KWin marks the valid part of a window frame with crop metadata (e.g. right
+        // after the window shrank); fit the bars to that part, not the whole frame.
+        GstBuffer *buf = GST_PAD_PROBE_INFO_BUFFER(info);
+        const GstVideoCropMeta *crop = gst_buffer_get_video_crop_meta(buf);
+        const QRect area = crop ? QRect(int(crop->x), int(crop->y), int(crop->width), int(crop->height)) : QRect();
+        if (area == p->m_cropArea) {
+            return GST_PAD_PROBE_OK;
+        }
+        p->m_cropArea = area;
+        if (area.isEmpty()) {
+            w = p->m_frameW;
+            h = p->m_frameH;
+            what = u"no valid-area mark"_s;
+        } else {
+            w = area.width();
+            h = area.height();
+            what = u"valid area %1,%2 %3×%4 of %5×%6"_s.arg(area.x()).arg(area.y()).arg(w).arg(h).arg(p->m_frameW).arg(p->m_frameH);
+        }
+    } else {
+        GstEvent *event = GST_PAD_PROBE_INFO_EVENT(info);
+        if (GST_EVENT_TYPE(event) != GST_EVENT_CAPS) {
+            return GST_PAD_PROBE_OK;
+        }
+        GstCaps *caps = nullptr;
+        gst_event_parse_caps(event, &caps);
+        const GstStructure *st = gst_caps_get_structure(caps, 0);
+        if (!gst_structure_get_int(st, "width", &w) || !gst_structure_get_int(st, "height", &h) || w <= 0 || h <= 0) {
+            return GST_PAD_PROBE_OK;
+        }
+        // KWin leaves the pixel aspect unset and pipewiresrc then reports a
+        // placeholder (1/2147483647). Only trust plausible values; else square pixels.
+        if (!gst_structure_get_fraction(st, "pixel-aspect-ratio", &parN, &parD) || parN <= 0 || parD <= 0
+            || double(parN) / parD < 0.25 || double(parN) / parD > 4.0) {
+            parN = parD = 1;
+        }
+        w = int(qint64(w) * parN / qMax(1, parD));
+        p->m_frameW = w;
+        p->m_frameH = h;
+        if (!p->m_cropArea.isEmpty()) {
+            return GST_PAD_PROBE_OK; // the valid area still decides the shape
+        }
+        what = u"frame size"_s;
+    }
+    if (w <= 0 || h <= 0) {
         return GST_PAD_PROBE_OK;
     }
-    // KWin leaves the pixel aspect unset and pipewiresrc then reports a
-    // placeholder (1/2147483647). Only trust plausible values; else square pixels.
-    if (!gst_structure_get_fraction(st, "pixel-aspect-ratio", &parN, &parD) || parN <= 0 || parD <= 0
-        || double(parN) / parD < 0.25 || double(parN) / parD > 4.0) {
-        parN = parD = 1;
+    const Fit fit = fitInside(w, h, p->m_outW, p->m_outH);
+    const bool changed = !(fit == p->m_fit);
+    if (changed) {
+        p->applyFit(fit);
     }
-    const Fit fit = fitInside(int(qint64(w) * parN / qMax(1, parD)), h, p->m_outW, p->m_outH);
-    if (fit == p->m_fit) {
-        return GST_PAD_PROBE_OK;
-    }
-    p->applyFit(fit);
     QMetaObject::invokeMethod(
         p,
-        [p, w, h, fit] {
-            Q_EMIT p->log(u"Source is now %1×%2: picture %3×%4 inside %5×%6 (bars %7/%8 px left/right, %9/%10 px top/bottom)"_s.arg(w)
+        [p, w, h, fit, what, changed] {
+            Q_EMIT p->log(u"Source %1: %2×%3%4"_s.arg(what)
+                              .arg(w)
                               .arg(h)
-                              .arg(fit.w)
-                              .arg(fit.h)
-                              .arg(p->m_outW)
-                              .arg(p->m_outH)
-                              .arg(fit.left)
-                              .arg(fit.right)
-                              .arg(fit.top)
-                              .arg(fit.bottom));
+                              .arg(changed ? u" → picture %1×%2 inside %3×%4 (bars %5/%6 px left/right, %7/%8 px top/bottom)"_s.arg(fit.w)
+                                                 .arg(fit.h)
+                                                 .arg(p->m_outW)
+                                                 .arg(p->m_outH)
+                                                 .arg(fit.left)
+                                                 .arg(fit.right)
+                                                 .arg(fit.top)
+                                                 .arg(fit.bottom)
+                                           : QString()));
         },
         Qt::QueuedConnection);
     return GST_PAD_PROBE_OK;

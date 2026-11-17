@@ -3,6 +3,7 @@
 #pragma once
 
 #include <QObject>
+#include <QRect>
 #include <QSize>
 #include <QStringList>
 #include <QTimer>
@@ -88,4 +89,6 @@ private:
     QString m_fitCapsTemplate; // %1 width, %2 height
     Fit m_fit;
     int m_outW = 0, m_outH = 0;
+    int m_frameW = 0, m_frameH = 0; // delivered frame size
+    QRect m_cropArea;               // KWin's valid-area mark, empty if none
 };

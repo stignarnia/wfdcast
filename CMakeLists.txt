@@ -15,7 +15,7 @@ include(KDECMakeSettings)
 find_package(Qt6 6.6 REQUIRED COMPONENTS Core Gui Widgets Qml Quick QuickControls2 DBus Network)
 find_package(KF6 6.0 REQUIRED COMPONENTS Kirigami I18n CoreAddons Config)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(GST REQUIRED IMPORTED_TARGET gstreamer-1.0)
+pkg_check_modules(GST REQUIRED IMPORTED_TARGET gstreamer-1.0 gstreamer-video-1.0)
 find_package(Qt6Keychain REQUIRED) # TV passphrase in KWallet (Secret Service elsewhere)
 
 # Commit shown in the app: `git describe --always --dirty` from the checkout, or
