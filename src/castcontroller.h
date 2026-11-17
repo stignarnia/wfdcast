@@ -96,6 +96,7 @@ private:
     int m_pwFd = -1;
     quint32 m_pwNode = 0;
     QSize m_sourceSize;
+    bool m_windowSource = false;
     int m_castW = 0, m_castH = 0, m_castFps = 0;
     QString m_audioDevice;
     QString m_targetMac;

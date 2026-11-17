@@ -239,7 +239,21 @@ bool Pipeline::startOnce(const Config &c, const QString &candidate, QString *err
                         .arg(memIn);
     QString scale, place, mem;
     const QString format = m_encoderName == u"x264"_s ? u"I420"_s : u"NV12"_s;
-    if (m_encoderName == u"vaapi"_s) {
+    if (m_encoderName == u"vaapi"_s && c.windowSource) {
+        // Window on AMD: KWin's window frames (AR24) have transparent shadow margins whose
+        // colour values hold stale pixels, and vapostproc drops alpha. Scale on the GPU
+        // keeping alpha (BGRA, system memory), blend onto black with the CPU compositor
+        // at the fitted size (it outputs BGRA, not BGRx/NV12), convert to NV12 on the GPU.
+        mem = u"(memory:VAMemory)"_s;
+        const QString pp = vaElement(u"postproc"_s);
+        scale = pp + u" name=fitscale"_s;
+        place = u"compositor background=black name=comp sink_0::xpos=%1 sink_0::ypos=%2 ! "
+                "video/x-raw,format=BGRA,%3,framerate=%4/1,pixel-aspect-ratio=1/1 ! %5 ! video/x-raw%6,format=NV12 ! "_s.arg(m_fit.left)
+                    .arg(m_fit.top)
+                    .arg(size)
+                    .arg(c.fps)
+                    .arg(pp, mem);
+    } else if (m_encoderName == u"vaapi"_s) {
         // AMD: vacompositor fails in the driver with PipeWire input ("vaEndPicture:
         // operation failed"), so a second vapostproc adds the borders around the
         // already correctly shaped picture and videorate holds the frame rate.
@@ -271,8 +285,9 @@ bool Pipeline::startOnce(const Config &c, const QString &candidate, QString *err
                     .arg(mem, format, size)
                     .arg(c.fps);
     }
-    m_fitCapsTemplate = u"video/x-raw%1,format=%2,width=%3,height=%4,pixel-aspect-ratio=1/1"_s.arg(
-        mem, m_encoderName == u"vaapi"_s ? u"BGRx"_s : format);
+    m_fitCapsTemplate = m_encoderName == u"vaapi"_s && c.windowSource
+        ? u"video/x-raw,format=BGRA,width=%1,height=%2,pixel-aspect-ratio=1/1"_s // system memory, alpha kept
+        : u"video/x-raw%1,format=%2,width=%3,height=%4,pixel-aspect-ratio=1/1"_s.arg(mem, m_encoderName == u"vaapi"_s ? u"BGRx"_s : format);
     video += u"%1 ! capsfilter name=fitcaps caps=\"%2\" ! %3"_s.arg(scale, m_fitCapsTemplate.arg(m_fit.w).arg(m_fit.h), place);
     if (m_encoderName == u"vaapi"_s) {
         video += u"%5 name=enc bitrate=%1 rate-control=cbr key-int-max=%2 b-frames=0 target-usage=%3 ! %4 ! "_s

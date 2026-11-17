@@ -174,8 +174,13 @@ void AudioRouter::moveAppStreams()
     for (const QString &line : pactl({u"list"_s, u"short"_s, u"sinks"_s}).split(u'\n', Qt::SkipEmptyParts)) {
         sinkNames.insert(line.section(u'\t', 0, 0), line.section(u'\t', 1, 1));
     }
+    QStringList seen;
+    bool anyMatch = false;
     for (const QJsonValue &v : inputs) {
         const QJsonObject in = v.toObject();
+        const QVariantMap seenProps = in.value(u"properties"_s).toObject().toVariantMap();
+        seen << u"%1/%2"_s.arg(seenProps.value(u"application.name"_s).toString(), seenProps.value(u"application.process.binary"_s).toString());
+        anyMatch = anyMatch || matchesApp(seenProps);
         const int index = in.value(u"index"_s).toInt();
         const QVariantMap props = in.value(u"properties"_s).toObject().toVariantMap();
         if (!matchesApp(props)) {
@@ -188,6 +193,10 @@ void AudioRouter::moveAppStreams()
             }
             m_movedStreams.insert(index);
         }
+    }
+    if (!anyMatch && !m_loggedNoMatch) {
+        m_loggedNoMatch = true;
+        Q_EMIT log(u"Audio: no stream of %1 playing yet (streams now: %2)"_s.arg(m_appNames.join(u", "_s), seen.join(u", "_s)));
     }
 }
 
@@ -203,6 +212,7 @@ void AudioRouter::restore()
         }
     }
     m_movedStreams.clear();
+    m_loggedNoMatch = false;
     for (auto it = m_moduleIds.crbegin(); it != m_moduleIds.crend(); ++it) { // combine sink before its slave
         pactl({u"unload-module"_s, *it});
     }

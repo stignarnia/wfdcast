@@ -130,6 +130,10 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   automatically from the biggest HD CEA mode the TV advertises, sends only modes of that shape and letterboxes here
   (1440×900 → 1600×900 with pillar bars, no scaling). No setting. Panel resolution (3840/4096) is not exposed by the
   Miracast reply nor the Cast `eureka_info`; ADB `wm size` would show it.
+- **Window leftovers = alpha**: KWin window frames (AR24) have transparent shadow margins with stale colour values.
+  NVENC/x264 paths blend onto black (compositor) and are clean (user-confirmed). AMD window path: vapostproc → BGRA
+  system memory (alpha kept) → CPU `compositor background=black` (outputs BGRA only; BGRx/NV12 = not-negotiated) →
+  vapostproc → NV12 VAMemory → vah264enc. Verified: alpha-0 stale pixels → black, 60 fps.
 - **Window audio**: for a shared window (portal `source_type` 2) the app id comes from KWin's stream name
   (`media.name` = `kwin-screencast-<app id>`, via `pw-dump`). Only that app's sink-inputs are moved (matched on
   `application.process.binary` / `application.name` / app id, normalized, plus the `.desktop` Exec/Name): "TV only" →

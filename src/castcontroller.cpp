@@ -194,6 +194,7 @@ void CastController::onPortalReady(int fd, quint32 node, QSize size, uint source
     appendLog(u"Screen source ready: PipeWire node %1, %2×%3"_s.arg(node).arg(size.width()).arg(size.height()));
 
     QString audioWarning;
+    m_windowSource = sourceType == 2;
     const QString appId = sourceType == 2 ? windowAppId(node) : QString();
     if (sourceType == 2) {
         appendLog(appId.isEmpty() ? u"Shared a window, but could not tell its application: sending all audio."_s
@@ -394,6 +395,7 @@ void CastController::onPlay(const QString &ip, int port, int w, int h, int fps)
     c.node = m_pwNode;
     c.sourceWidth = m_sourceSize.width();
     c.sourceHeight = m_sourceSize.height();
+    c.windowSource = m_windowSource;
     c.audioDevice = m_audioDevice;
     c.encoder = m_settings->getString(u"encoder"_s);
     c.width = w;

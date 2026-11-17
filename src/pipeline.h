@@ -22,6 +22,7 @@ public:
         int pipewireFd = -1;
         quint32 node = 0;
         int sourceWidth = 0, sourceHeight = 0; // size KDE reported for the shared source
+        bool windowSource = false; // transparent shadow margins: needs an alpha-blending path
         QString audioDevice; // empty = silence
         QString encoder; // auto | x264 | vaapi | nvenc
         int width = 1920, height = 1080, fps = 30;

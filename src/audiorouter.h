@@ -43,5 +43,6 @@ private:
     QString m_appTargetSink; // where the shared window's app streams go
     QStringList m_appNames;   // normalized names identifying the shared app
     QSet<int> m_movedStreams;
+    bool m_loggedNoMatch = false;
     QTimer m_followTimer;
 };
