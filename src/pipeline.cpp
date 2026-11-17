@@ -158,40 +158,49 @@ QString Pipeline::vaElement(const QString &suffix) const
 bool Pipeline::start(const Config &c, QString *error)
 {
     m_config = c;
-    QStringList candidates;
+    const Gpu gpu = compositingGpu();
+    const bool vaOnGpu = gpu.vendor == u"amd"_s || gpu.vendor == u"intel"_s;
+    m_vaNode = vaOnGpu ? gpu.renderNode : QString();
+    QStringList encoders;
     if (c.encoder == u"auto"_s) {
-        const Gpu gpu = compositingGpu();
-        m_vaNode = gpu.renderNode;
-        candidates = autoOrder(gpu);
-        Q_EMIT log(u"Automatic encoder: KDE composites on %1 (%2, %3) → trying %4"_s.arg(
-            gpu.vendor.isEmpty() ? u"an unknown GPU"_s : gpu.vendor, gpu.pci, gpu.how, candidates.join(u", "_s)));
-    } else {
-        m_vaNode.clear();
-        if (availableEncoders().contains(c.encoder)) {
-            candidates << c.encoder;
-        }
+        encoders = autoOrder(gpu);
+    } else if (availableEncoders().contains(c.encoder)) {
+        encoders << c.encoder;
     }
-    if (candidates.isEmpty()) {
+    if (encoders.isEmpty()) {
         *error = u"The %1 encoder is not available on this system."_s.arg(c.encoder);
         return false;
     }
+    // Each encoder first takes KWin's frames in GPU memory when it runs on the GPU
+    // KWin composites on (a GPU can only import its own buffers), else / on failure
+    // in system memory.
+    QStringList candidates;
+    for (const QString &e : encoders) {
+        if ((e == u"vaapi"_s && vaOnGpu) || (e == u"nvenc"_s && gpu.vendor == u"nvidia"_s)) {
+            candidates << e + u"/gpu"_s;
+        }
+        candidates << e + u"/sys"_s;
+    }
+    Q_EMIT log(u"KDE composites on %1 (%2, %3); encoder %4 → trying %5"_s.arg(gpu.vendor.isEmpty() ? u"an unknown GPU"_s : gpu.vendor,
+                                                                          gpu.pci, gpu.how, c.encoder, candidates.join(u", "_s)));
     while (!candidates.isEmpty()) {
-        const QString enc = candidates.takeFirst();
-        if (startOnce(c, enc, error)) {
+        const QString cand = candidates.takeFirst();
+        if (startOnce(c, cand, error)) {
             m_fallbacks = candidates;
             return true;
         }
         if (!candidates.isEmpty()) {
-            Q_EMIT log(u"%1 encoder failed to start (%2); trying %3"_s.arg(enc, *error, candidates.first()));
+            Q_EMIT log(u"%1 failed to start (%2); trying %3"_s.arg(cand, *error, candidates.first()));
         }
     }
     return false;
 }
 
-bool Pipeline::startOnce(const Config &c, const QString &encoder, QString *error)
+bool Pipeline::startOnce(const Config &c, const QString &candidate, QString *error)
 {
     stop();
-    m_encoderName = encoder;
+    m_encoderName = candidate.section(u'/', 0, 0);
+    m_gpuMemory = candidate.endsWith(u"/gpu"_s);
     const int q = qBound(1, c.quality, 7);
     const int gop = qMax(1, c.keyframeSeconds * c.fps);
     const QString size = u"width=%1,height=%2"_s.arg(c.width).arg(c.height);
@@ -211,16 +220,19 @@ bool Pipeline::startOnce(const Config &c, const QString &encoder, QString *error
     m_outW = c.width;
     m_outH = c.height;
     m_fit = fitInside(c.sourceWidth > 0 ? c.sourceWidth : c.width, c.sourceHeight > 0 ? c.sourceHeight : c.height, c.width, c.height);
-    // video/x-raw = system memory: KWin then hands over plain (memfd) buffers. Left
-    // open, it offers its tiled DMA-BUFs (e.g. AMD modifier 0x0200000010401b04),
-    // which vapostproc accepted in negotiation and then failed on
-    // ("Internal data stream error"). Every working run used system memory.
+    // System memory (video/x-raw): KWin hands over plain buffers that any encoder
+    // can upload. GPU memory (DMA-BUF): no copy, but only the GPU that rendered the
+    // frame can import it; NVIDIA goes through GL (cudaupload takes GLMemory).
     // No leaky queue here: with a PipeWire source, leaky queue + compositor dies with
     // "Internal data stream error" (reproduced with pipewiresink -> pipewiresrc). The
-    // compositor already holds real time, and PipeWire skips frames when we're busy.
-    QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%3 ! video/x-raw ! "_s.arg(::dup(c.pipewireFd))
+    // compositor / videorate already hold real time, and PipeWire skips frames when busy.
+    const QString memIn = !m_gpuMemory               ? u"video/x-raw ! "_s
+        : m_encoderName == u"nvenc"_s ? u"video/x-raw(memory:DMABuf) ! glupload ! video/x-raw(memory:GLMemory) ! "_s
+                                      : u"video/x-raw(memory:DMABuf) ! "_s;
+    QString video = u"pipewiresrc name=src fd=%1 path=%2 do-timestamp=true keepalive-time=%3 ! %4"_s.arg(::dup(c.pipewireFd))
                         .arg(c.node)
-                        .arg(frameMs);
+                        .arg(frameMs)
+                        .arg(memIn);
     QString scale, place, mem;
     const QString format = m_encoderName == u"x264"_s ? u"I420"_s : u"NV12"_s;
     if (m_encoderName == u"vaapi"_s) {
@@ -382,7 +394,10 @@ bool Pipeline::running() const
 
 QString Pipeline::encoderInUse() const
 {
-    return m_encoderName;
+    if (m_encoderName.isEmpty()) {
+        return {};
+    }
+    return u"%1 encoder, %2"_s.arg(m_encoderName, m_gpuMemory ? u"GPU memory"_s : u"system memory"_s);
 }
 
 void Pipeline::setVideoBitrate(int kbps)

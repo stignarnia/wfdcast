@@ -394,7 +394,7 @@ void CastController::updateCastingStatus()
 {
     // Numbers as strings: i18n() would add thousands separators ("1,920").
     const QSize pic = m_pipeline.pictureSize();
-    setStatus(i18n("Casting to %1: picture %2×%3 in %4×%5 at %6 fps (%7 encoder).",
+    setStatus(i18n("Casting to %1: picture %2×%3 in %4×%5 at %6 fps (%7).",
                    m_targetName.isEmpty() ? m_targetMac : m_targetName, QString::number(pic.width()),
                    QString::number(pic.height()), QString::number(m_castW), QString::number(m_castH),
                    QString::number(m_castFps), m_pipeline.encoderInUse()));

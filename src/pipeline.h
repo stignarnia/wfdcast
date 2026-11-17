@@ -60,7 +60,7 @@ private:
     static Fit fitInside(int srcW, int srcH, int outW, int outH);
     void applyFit(const Fit &fit); // live: scaler caps + borders
     static int onScalerEvent(GstPad *pad, GstPadProbeInfo *info, void *self);
-    bool startOnce(const Config &config, const QString &encoder, QString *error);
+    bool startOnce(const Config &config, const QString &candidate, QString *error); // "vaapi/gpu", "x264/sys"…
 
     // The GPU KWin composites on (its frames come from there; encoding on the same
     // GPU avoids a copy and keeps the other GPU asleep): kwin-gpuswitch's D-Bus
@@ -80,6 +80,7 @@ private:
     GstElement *m_pipeline = nullptr;
     GstElement *m_encoder = nullptr;
     QString m_encoderName;
+    bool m_gpuMemory = false;
     QTimer m_busTimer;
     bool m_sourceCapsLogged = false;
     GstElement *m_fitCaps = nullptr;
