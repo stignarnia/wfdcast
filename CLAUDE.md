@@ -135,8 +135,11 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   system memory (alpha kept) → CPU `compositor background=black` (outputs BGRA only; BGRx/NV12 = not-negotiated) →
   vapostproc → NV12 VAMemory → vah264enc. Verified: alpha-0 stale pixels → black, 60 fps.
 - **Window audio**: for a shared window (portal `source_type` 2) the app id comes from KWin's stream name
-  (`media.name` = `kwin-screencast-<app id>`, via `pw-dump`). Only that app's sink-inputs are moved (matched on
-  `application.process.binary` / `application.name` / app id, normalized, plus the `.desktop` Exec/Name): "TV only" →
+  (`media.name` = `kwin-screencast-<app id>`, via `pw-dump`). The window's process ids come from a one-shot KWin script
+  (`workspace.windowList()`, `desktopFileName` == app id → `pid`, read back from the journal); sink-inputs whose
+  `application.process.id` is that pid or a descendant (`/proc/*/status` PPid chain) are moved — like Plasma's audio
+  applet. Name matching (binary/name/app id + `.desktop` Exec/Name) is only the fallback when KWin can't be asked.
+  Verified: Firefox PWA (YouTube Music, pid 22656) moved; Konsole window leaves Firefox alone. "TV only" →
   null sink `wfdcast` without changing the default; "Laptop and TV" → combine sink `wfdcast_both` (wfdcast + previous
   default). New streams are picked up every 1.5 s; all moved streams go back to the previous default on stop.
 - **60 fps helps audio**: the muxer releases audio with each video frame, so 60 fps halves the clump size; TV overflows

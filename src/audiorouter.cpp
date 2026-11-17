@@ -85,7 +85,7 @@ QString AudioRouter::loadModule(const QStringList &args, QString *error)
     return id;
 }
 
-QString AudioRouter::setup(const QString &mode, const QString &appId, QString *error)
+QString AudioRouter::setup(const QString &mode, const QString &appId, const QList<qint64> &windowPids, QString *error)
 {
     restore();
     cleanupStale();
@@ -100,6 +100,7 @@ QString AudioRouter::setup(const QString &mode, const QString &appId, QString *e
     }
 
     if (!appId.isEmpty()) {
+        m_windowPids = windowPids;
         // Names that identify the shared window's application in its audio streams:
         // the app id's last part, and the program and name from its .desktop file.
         m_appNames = {normalized(appId.section(u'.', -1))};
@@ -134,8 +135,12 @@ QString AudioRouter::setup(const QString &mode, const QString &appId, QString *e
             }
             m_appTargetSink = kBothName;
         }
+        QStringList pids;
+        for (qint64 pid : windowPids) {
+            pids << QString::number(pid);
+        }
         Q_EMIT log(u"Audio: only the shared window's app (%1) goes to the TV%2"_s.arg(
-            m_appNames.join(u", "_s), mode == u"mirror"_s ? u", and still plays on the laptop"_s : QString()));
+            pids.isEmpty() ? m_appNames.join(u", "_s) : u"process "_s + pids.join(u", "_s) + u" and its children"_s, mode == u"mirror"_s ? u", and still plays on the laptop"_s : QString()));
         moveAppStreams();
         m_followTimer.start();
         return kSinkName + u".monitor"_s;
@@ -155,6 +160,28 @@ QString AudioRouter::setup(const QString &mode, const QString &appId, QString *e
 
 bool AudioRouter::matchesApp(const QVariantMap &p) const
 {
+    if (!m_windowPids.isEmpty()) {
+        // Like Plasma's audio applet: the stream's process, or one of its ancestors,
+        // owns the shared window.
+        qint64 pid = p.value(u"application.process.id"_s).toLongLong();
+        for (int depth = 0; pid > 1 && depth < 32; ++depth) {
+            if (m_windowPids.contains(pid)) {
+                return true;
+            }
+            QFile status(u"/proc/%1/status"_s.arg(pid));
+            if (!status.open(QIODevice::ReadOnly)) {
+                break;
+            }
+            qint64 parent = 0;
+            for (const QByteArray &line : status.readAll().split('\n')) {
+                if (line.startsWith("PPid:")) {
+                    parent = line.mid(5).trimmed().toLongLong();
+                }
+            }
+            pid = parent;
+        }
+        return false;
+    }
     const QStringList fields = {normalized(p.value(u"application.process.binary"_s).toString()),
                                 normalized(p.value(u"application.name"_s).toString()),
                                 normalized(p.value(u"application.id"_s).toString().section(u'.', -1)),
@@ -196,7 +223,7 @@ void AudioRouter::moveAppStreams()
     }
     if (!anyMatch && !m_loggedNoMatch) {
         m_loggedNoMatch = true;
-        Q_EMIT log(u"Audio: no stream of %1 playing yet (streams now: %2)"_s.arg(m_appNames.join(u", "_s), seen.join(u", "_s)));
+        Q_EMIT log(u"Audio: no stream of the shared window's app playing yet (streams now: %1)"_s.arg(seen.join(u", "_s)));
     }
 }
 
@@ -219,5 +246,6 @@ void AudioRouter::restore()
     m_moduleIds.clear();
     m_appTargetSink.clear();
     m_appNames.clear();
+    m_windowPids.clear();
     m_previousSink.clear();
 }

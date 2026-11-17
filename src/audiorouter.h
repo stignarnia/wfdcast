@@ -24,7 +24,9 @@ public:
     explicit AudioRouter(QObject *parent = nullptr);
     ~AudioRouter() override;
     // Returns the PulseAudio source to record ("" = silence). Fills *error on problems.
-    QString setup(const QString &mode, const QString &appId, QString *error);
+    // windowPids: processes owning the shared window (from KWin); their audio streams and
+    // those of their child processes go to the TV. Empty: match by application name.
+    QString setup(const QString &mode, const QString &appId, const QList<qint64> &windowPids, QString *error);
     void restore();
     // Remove "wfdcast" outputs left by a run that was killed, and leave a real default output.
     static void cleanupStale();
@@ -41,7 +43,8 @@ private:
     QString m_previousSink;
     QStringList m_moduleIds;
     QString m_appTargetSink; // where the shared window's app streams go
-    QStringList m_appNames;   // normalized names identifying the shared app
+    QStringList m_appNames;   // normalized names identifying the shared app (fallback)
+    QList<qint64> m_windowPids;
     QSet<int> m_movedStreams;
     bool m_loggedNoMatch = false;
     QTimer m_followTimer;

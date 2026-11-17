@@ -6,6 +6,12 @@
 #include <KLocalizedString>
 #include <QDateTime>
 #include <QJsonDocument>
+#include <QThread>
+#include <QTemporaryFile>
+#include <QDir>
+#include <QDBusReply>
+#include <QDBusMessage>
+#include <QDBusConnection>
 #include <QProcess>
 #include <QJsonArray>
 
@@ -183,6 +189,50 @@ QString CastController::windowAppId(quint32 node)
     return {};
 }
 
+QList<qint64> CastController::windowPids(const QString &appId)
+{
+    // KWin knows each window's process: run a one-shot KWin script that logs the pid of
+    // the windows with this app id, and read it back from the journal.
+    if (appId.isEmpty()) {
+        return {};
+    }
+    const QString marker = u"WFDCAST-PID-%1"_s.arg(QDateTime::currentMSecsSinceEpoch());
+    QTemporaryFile script(QDir::tempPath() + u"/wfdcast-XXXXXX.js"_s);
+    if (!script.open()) {
+        return {};
+    }
+    QString quoted = appId;
+    quoted.replace(u'\\', u"\\\\"_s).replace(u'"', u"\\\""_s);
+    script.write(u"for (const w of workspace.windowList()) if (w.desktopFileName == \"%1\") console.info(\"%2 \" + w.pid);\n"_s.arg(quoted, marker).toUtf8());
+    script.flush();
+    const QString since = QDateTime::currentDateTime().addSecs(-1).toString(u"yyyy-MM-dd HH:mm:ss"_s);
+    QDBusMessage load = QDBusMessage::createMethodCall(u"org.kde.KWin"_s, u"/Scripting"_s, u"org.kde.kwin.Scripting"_s, u"loadScript"_s);
+    load.setArguments({script.fileName(), marker});
+    const QDBusReply<int> id = QDBusConnection::sessionBus().call(load);
+    if (!id.isValid()) {
+        return {};
+    }
+    QDBusConnection::sessionBus().call(QDBusMessage::createMethodCall(u"org.kde.KWin"_s, u"/Scripting/Script%1"_s.arg(id.value()),
+                                                                      u"org.kde.kwin.Script"_s, u"run"_s));
+    QList<qint64> pids;
+    for (int attempt = 0; attempt < 10 && pids.isEmpty(); ++attempt) {
+        QThread::msleep(100);
+        QProcess j;
+        j.start(u"journalctl"_s, {u"--user"_s, u"--since"_s, since, u"-o"_s, u"cat"_s, u"--grep"_s, marker});
+        j.waitForFinished(3000);
+        for (const QString &line : QString::fromUtf8(j.readAllStandardOutput()).split(u'\n', Qt::SkipEmptyParts)) {
+            const qint64 pid = line.section(u' ', -1).toLongLong();
+            if (pid > 0 && !pids.contains(pid)) {
+                pids << pid;
+            }
+        }
+    }
+    QDBusMessage unload = QDBusMessage::createMethodCall(u"org.kde.KWin"_s, u"/Scripting"_s, u"org.kde.kwin.Scripting"_s, u"unloadScript"_s);
+    unload.setArguments({marker});
+    QDBusConnection::sessionBus().call(unload);
+    return pids;
+}
+
 void CastController::onPortalReady(int fd, quint32 node, QSize size, uint sourceType)
 {
     if (m_pwFd >= 0) {
@@ -200,7 +250,7 @@ void CastController::onPortalReady(int fd, quint32 node, QSize size, uint source
         appendLog(appId.isEmpty() ? u"Shared a window, but could not tell its application: sending all audio."_s
                                   : u"Shared a window of %1."_s.arg(appId));
     }
-    m_audioDevice = m_audio.setup(m_settings->getString(u"audioMode"_s), appId, &audioWarning);
+    m_audioDevice = m_audio.setup(m_settings->getString(u"audioMode"_s), appId, windowPids(appId), &audioWarning);
     if (!audioWarning.isEmpty()) {
         appendLog(audioWarning);
     }

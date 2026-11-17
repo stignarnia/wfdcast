@@ -62,6 +62,7 @@ private:
 
     void onPortalReady(int fd, quint32 node, QSize size, uint sourceType);
     static QString windowAppId(quint32 node); // app id of a shared window's KWin stream
+    static QList<qint64> windowPids(const QString &appId); // processes owning windows of that app (KWin)
     void startHelper();
     void sendHelper(const QJsonObject &cmd);
     void onHelperOutput();
