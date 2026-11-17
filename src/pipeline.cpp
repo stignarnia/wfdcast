@@ -239,28 +239,35 @@ bool Pipeline::startOnce(const Config &c, const QString &candidate, QString *err
                         .arg(memIn);
     QString scale, place, mem;
     const QString format = m_encoderName == u"x264"_s ? u"I420"_s : u"NV12"_s;
-    bool fitCapsFilter = true;
+    QString extraBranch; // appended after the main chain
     if (m_encoderName == u"vaapi"_s && c.windowSource) {
         // Window on AMD: KWin's window frames (AR24) have transparent shadow margins whose
-        // colour values hold stale pixels, and vapostproc drops alpha. glvideomixer scales,
-        // blends onto black and places the picture on the GPU (118 fps max at 2880x1800;
-        // the CPU compositor managed 76 and fell behind), then VA encodes. GL can't export
-        // a DMA-BUF that vapostproc negotiates, so the 1080p frame crosses system memory.
+        // colour values hold stale pixels. vapostproc scales keeping alpha (BGRA) and
+        // vacompositor blends onto black and places the picture, all on the GPU.
+        // vacompositor fails ("vaEndPicture: operation failed") whenever it has no input
+        // picture to compose, which happens with PipeWire because caps arrive before the
+        // first frame, and it doesn't clear its canvas. A tiny live black picture,
+        // stretched to the whole frame under the window (sink_1), fixes both.
+        // (GL is not an option: importing KWin's DMA-BUF into GL made the GPU reset.)
         mem = u"(memory:VAMemory)"_s;
-        fitCapsFilter = false;
-        scale = u"glupload name=fitscale"_s;
-        place = u"glvideomixer background=black name=comp sink_0::xpos=%1 sink_0::ypos=%2 sink_0::width=%3 sink_0::height=%4 ! "
-                "video/x-raw(memory:GLMemory),format=RGBA,%5,framerate=%6/1 ! gldownload ! video/x-raw,format=RGBA ! "
-                "%7 ! video/x-raw%8,format=NV12 ! "_s.arg(m_fit.left)
+        const QString pp = vaElement(u"postproc"_s);
+        scale = pp + u" name=fitscale"_s;
+        place = u"%1 name=comp sink_0::xpos=%2 sink_0::ypos=%3 sink_0::zorder=1 "
+                "sink_1::zorder=0 sink_1::xpos=0 sink_1::ypos=0 sink_1::width=%4 sink_1::height=%5 ! "
+                "video/x-raw%6,format=BGRA,%7,framerate=%8/1,pixel-aspect-ratio=1/1 ! %9 ! video/x-raw%6,format=NV12 ! "_s
+                    .arg(vaElement(u"compositor"_s))
+                    .arg(m_fit.left)
                     .arg(m_fit.top)
-                    .arg(m_fit.w)
-                    .arg(m_fit.h)
-                    .arg(size)
+                    .arg(c.width)
+                    .arg(c.height)
+                    .arg(mem, size)
                     .arg(c.fps)
-                    .arg(vaElement(u"postproc"_s), mem);
+                    .arg(pp);
+        extraBranch = u" videotestsrc is-live=true pattern=black ! video/x-raw,format=BGRA,width=16,height=16,framerate=%1/1 ! "
+                      "%2 ! video/x-raw%3,format=BGRA ! comp."_s.arg(c.fps)
+                          .arg(pp, mem);
     } else if (m_encoderName == u"vaapi"_s) {
-        // AMD: vacompositor fails in the driver with PipeWire input ("vaEndPicture:
-        // operation failed"), so a second vapostproc adds the borders around the
+        // AMD screens (opaque): a second vapostproc adds the borders around the
         // already correctly shaped picture and videorate holds the frame rate.
         // Borders are added in BGRx: vapostproc fills them with zeros, which is black
         // in RGB but green in NV12. A last vapostproc converts to NV12 for the encoder.
@@ -290,9 +297,9 @@ bool Pipeline::startOnce(const Config &c, const QString &candidate, QString *err
                     .arg(mem, format, size)
                     .arg(c.fps);
     }
-    m_fitCapsTemplate = u"video/x-raw%1,format=%2,width=%3,height=%4,pixel-aspect-ratio=1/1"_s.arg(mem, m_encoderName == u"vaapi"_s ? u"BGRx"_s : format);
-    video += fitCapsFilter ? u"%1 ! capsfilter name=fitcaps caps=\"%2\" ! %3"_s.arg(scale, m_fitCapsTemplate.arg(m_fit.w).arg(m_fit.h), place)
-                           : u"%1 ! %2"_s.arg(scale, place);
+    const QString fitFormat = m_encoderName != u"vaapi"_s ? format : c.windowSource ? u"BGRA"_s : u"BGRx"_s; // BGRA keeps alpha
+    m_fitCapsTemplate = u"video/x-raw%1,format=%2,width=%3,height=%4,pixel-aspect-ratio=1/1"_s.arg(mem, fitFormat);
+    video += u"%1 ! capsfilter name=fitcaps caps=\"%2\" ! %3"_s.arg(scale, m_fitCapsTemplate.arg(m_fit.w).arg(m_fit.h), place);
     if (m_encoderName == u"vaapi"_s) {
         video += u"%5 name=enc bitrate=%1 rate-control=cbr key-int-max=%2 b-frames=0 target-usage=%3 ! %4 ! "_s
                      .arg(c.videoKbps)
@@ -339,7 +346,7 @@ bool Pipeline::startOnce(const Config &c, const QString &candidate, QString *err
                             .arg(c.sinkPort)
                             .arg(c.localPort);
 
-    const QByteArray desc = (video + audio + out).toUtf8();
+    const QByteArray desc = (video + audio + out + extraBranch).toUtf8();
     Q_EMIT log(u"Pipeline: %1"_s.arg(QString::fromUtf8(desc).replace(QRegularExpression(u"fd=\\d+"_s), u"fd=…"_s)));
     GError *err = nullptr;
     m_pipeline = gst_parse_launch(desc.constData(), &err);
@@ -511,7 +518,8 @@ void Pipeline::applyFit(const Fit &f)
         return;
     }
     if (GstPad *pad = m_box ? gst_element_get_static_pad(m_box, "sink_0") : nullptr) {
-        // position, and size (only the GL mixer scales; for the others it equals the input)
+        // position, and size (equal to the fitted input; a compositor scales a frame
+        // still in flight at the old size instead of misplacing it)
         g_object_set(pad, "xpos", f.left, "ypos", f.top, "width", f.w, "height", f.h, nullptr);
         gst_object_unref(pad);
     }

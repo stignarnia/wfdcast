@@ -110,8 +110,7 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   managed ~42 fps while frames were stamped for 60, so the stream ran at ~60% of real time. Now each encoder path
   scales and letterboxes on its own device (AMD: vapostproc to the fitted shape + a second vapostproc add-borders **in BGRx** (its borders are zeros: green in NV12, black in
   RGB) + a vapostproc to NV12 + videorate, because
-  **vacompositor fails in the radeonsi driver with PipeWire input** (`vaEndPicture: operation failed`, reproduced via
-  pipewiresink → pipewiresrc; it only worked with test patterns); cudaconvertscale+cudacompositor ~400 fps,
+  vacompositor failed with PipeWire input (cause found later: no input picture yet, see below); cudaconvertscale+cudacompositor ~400 fps,
   multithreaded videoconvert/videoscale + compositor for x264) and the **compositor outputs exactly <fps> frames per
   second of real time** (reuses the last picture, drops extras); no leaky queue in front: with a PipeWire source, leaky
   queue + compositor dies with "Internal data stream error" (reproduced via pipewiresink → pipewiresrc); PipeWire
@@ -131,9 +130,20 @@ NVENC `preset` p1..p7. Video bitrate changes live (`bitrate` property on the enc
   (1440×900 → 1600×900 with pillar bars, no scaling). No setting. Panel resolution (3840/4096) is not exposed by the
   Miracast reply nor the Cast `eureka_info`; ADB `wm size` would show it.
 - **Window leftovers = alpha**: KWin window frames (AR24) have transparent shadow margins with stale colour values.
-  NVENC/x264 paths blend onto black (compositor) and are clean (user-confirmed). AMD window path: `glupload` → `glvideomixer
-  background=black` (scales/blends/places on the GPU, 118 fps max) → `gldownload` RGBA → vapostproc NV12 → vah264enc.
-  The CPU compositor variant reached only 76 fps max and made the TV fall behind; GL→DMA-BUF→vapostproc doesn't negotiate.
+  NVENC/x264 paths blend onto black (compositor) and are clean (user-confirmed). AMD window path: KWin DMA-BUF →
+  vapostproc (scale, BGRA keeps alpha) → `vacompositor` (window on sink_0 over a 16×16 live black picture stretched to
+  the frame on sink_1) → BGRA → vapostproc NV12 → vah264enc. Verified offline with the app's own Pipeline class
+  (opaque red / transparent stale-white source via pipewiresink): 60 fps, bars and transparent parts black.
+- **vacompositor fails whenever it has no input picture to compose** (`vaEndPicture: operation failed`, reproduced with
+  no inputs at all). With PipeWire the caps arrive before the first frame, so it failed at the first output: that was the
+  real cause behind "vacompositor fails with PipeWire input". It also doesn't clear its canvas (bars came out white
+  without the black input). A live black picture underneath fixes both; a single black frame with `repeat-after-eos`
+  was unreliable, a 1 fps black source added 1 s latency.
+- **Never import KWin's DMA-BUF into GL on AMD**: `glupload` of the tiled AR24 buffer logged
+  `gst_video_frame_map_id: assertion 'info->finfo->format == meta->format' failed`, then
+  `amdgpu: The CS has cancelled because the context is lost. This context is guilty of a hard recovery.` and Mesa
+  aborted the app (the TV's player crashed with the stream). The CPU compositor variant reached only 76 fps max and
+  the TV fell behind.
 - **Window audio**: for a shared window (portal `source_type` 2) the app id comes from KWin's stream name
   (`media.name` = `kwin-screencast-<app id>`, via `pw-dump`). The window's process ids come from a one-shot KWin script
   (`workspace.windowList()`, `desktopFileName` == app id → `pid`, read back from the journal); sink-inputs whose
